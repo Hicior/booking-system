@@ -1,103 +1,315 @@
-import Image from "next/image";
+'use client';
+
+import React, { useState, useEffect, useRef } from 'react';
+import { DatePicker, QuickDateSelector } from '@/components/ui';
+import { FloorPlan } from '@/components/FloorPlan';
+import { ReservationModal } from '@/components/ReservationModal';
+import { Card, CardHeader, CardTitle, CardContent, Button } from '@/components/ui';
+import { Room, Table, Reservation } from '@/lib/types';
+import { getRooms, getAllTablesWithRooms, getReservations } from '@/lib/api-client';
+import Link from 'next/link';
 
 export default function Home() {
-  return (
-    <div className="grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20 font-[family-name:var(--font-geist-sans)]">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="list-inside list-decimal text-sm/6 text-center sm:text-left font-[family-name:var(--font-geist-mono)]">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] px-1 py-0.5 rounded font-[family-name:var(--font-geist-mono)] font-semibold">
-              src/app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
+  // State management
+  const [selectedDate, setSelectedDate] = useState<string>('');
+  const [selectedTime, setSelectedTime] = useState<string>('');
+  const [currentView, setCurrentView] = useState<'datetime' | 'floorplan'>('datetime');
+  
+  // Data state
+  const [rooms, setRooms] = useState<Room[]>([]);
+  const [allTables, setAllTables] = useState<Table[]>([]);
+  const [reservations, setReservations] = useState<Reservation[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string>('');
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
+  // Modal state
+  const [reservationModal, setReservationModal] = useState({
+    isOpen: false,
+    table: null as Table | null,
+    existingReservation: null as Reservation | null
+  });
+
+  // Ref for scrolling to floorplan section
+  const floorPlanRef = useRef<HTMLDivElement>(null);
+
+  // Initialize date to today
+  useEffect(() => {
+    const today = new Date().toISOString().split('T')[0];
+    setSelectedDate(today);
+  }, []);
+
+  // Load rooms and tables on component mount
+  useEffect(() => {
+    const loadData = async () => {
+      try {
+        const [roomsData, tablesData] = await Promise.all([
+          getRooms(),
+          getAllTablesWithRooms()
+        ]);
+        
+        setRooms(roomsData);
+        setAllTables(tablesData);
+      } catch (err) {
+        setError('Nie udało się załadować danych Pubu');
+        console.error('Error loading data:', err);
+      }
+    };
+
+    loadData();
+  }, []);
+
+  // Load reservations when date changes
+  useEffect(() => {
+    const loadReservations = async () => {
+      if (!selectedDate) return;
+      
+      try {
+        const reservationsData = await getReservations({
+          reservation_date: selectedDate,
+          status: 'active'
+        });
+        setReservations(reservationsData);
+      } catch (err) {
+        console.error('Error loading reservations:', err);
+      }
+    };
+
+    loadReservations();
+  }, [selectedDate]);
+
+  // Scroll to FloorPlan when view changes to 'floorplan'
+  useEffect(() => {
+    if (currentView === 'floorplan' && floorPlanRef.current) {
+      // Small delay to ensure the component is rendered
+      setTimeout(() => {
+        floorPlanRef.current?.scrollIntoView({
+          behavior: 'smooth',
+          block: 'start'
+        });
+      }, 100);
+    }
+  }, [currentView]);
+
+  // Navigation handlers
+  const handleDateTimeNext = () => {
+    if (selectedDate && selectedTime) {
+      setCurrentView('floorplan');
+      setError('');
+    } else {
+      setError('Proszę wybrać datę i godzinę');
+    }
+  };
+
+  const handleTableClick = (table: Table) => {
+    setReservationModal({
+      isOpen: true,
+      table,
+      existingReservation: null
+    });
+  };
+
+  const handleCloseReservationModal = () => {
+    setReservationModal({
+      isOpen: false,
+      table: null,
+      existingReservation: null
+    });
+  };
+
+  const handleReservationCreated = () => {
+    // Reload reservations for the current date
+    if (selectedDate) {
+      getReservations({
+        reservation_date: selectedDate,
+        status: 'active'
+      }).then(setReservations).catch(console.error);
+    }
+  };
+
+  const handleBack = () => {
+    setCurrentView('datetime');
+  };
+
+  const handleReset = () => {
+    setCurrentView('datetime');
+    setError('');
+  };
+
+  if (error && currentView === 'datetime') {
+    return (
+      <div className="min-h-screen bg-base-100 flex items-center justify-center">
+        <Card className="max-w-md">
+          <CardContent className="text-center p-6">
+            <div className="text-error text-lg font-medium mb-2">Błąd</div>
+            <p className="text-base-content/70 mb-4">{error}</p>
+            <Button onClick={() => window.location.reload()}>
+              Odśwież stronę
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-base-100">
+      <div className="container mx-auto px-4 py-8 max-w-7xl">
+        {/* Header */}
+        <div className="text-center mb-8">
+          <h1 className="text-4xl font-bold text-primary mb-2">
+            System Rezerwacji - Pub Mentzen
+          </h1>
+          <p className="text-base-content/70 mb-4">
+            Panel Pracownika - Zarządzanie rezerwacjami stolików
+          </p>
+          <div className="flex justify-center space-x-4">
+            <Link href="/reservations">
+              <Button variant="secondary">
+                Zarządzaj rezerwacjami
+              </Button>
+            </Link>
+            <Link href="/overview">
+              <Button variant="accent">
+                Przegląd Pubu
+              </Button>
+            </Link>
+          </div>
         </div>
-      </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
+
+        {/* Progress indicator */}
+        <div className="flex items-center justify-center mb-8">
+          <div className="flex items-center space-x-4">
+            <div className={`flex items-center space-x-2 ${
+              currentView === 'datetime' ? 'text-primary' : 
+              selectedDate && selectedTime ? 'text-success' : 'text-base-content/50'
+            }`}>
+              <div className={`w-8 h-8 rounded-full flex items-center justify-center border-2 ${
+                currentView === 'datetime' ? 'border-primary bg-primary text-primary-content' :
+                selectedDate && selectedTime ? 'border-success bg-success text-success-content' : 
+                'border-base-300 text-base-content/50'
+              }`}>
+                1
+              </div>
+              <span className="font-medium">Data i godzina</span>
+            </div>
+            
+            <div className="w-8 h-px bg-base-300"></div>
+            
+            <div className={`flex items-center space-x-2 ${
+              currentView === 'floorplan' ? 'text-primary' : 'text-base-content/50'
+            }`}>
+              <div className={`w-8 h-8 rounded-full flex items-center justify-center border-2 ${
+                currentView === 'floorplan' ? 'border-primary bg-primary text-primary-content' : 
+                'border-base-300 text-base-content/50'
+              }`}>
+                2
+              </div>
+              <span className="font-medium">Wybór stolika</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Navigation buttons */}
+        {currentView !== 'datetime' && (
+          <div className="flex justify-between items-center mb-6">
+            <Button variant="secondary" onClick={handleBack}>
+              ← Wstecz
+            </Button>
+            <div className="text-sm text-base-content/70">
+              {selectedDate && (
+                <span>
+                  {new Date(selectedDate + 'T12:00:00').toLocaleDateString('pl', { 
+                    weekday: 'long', 
+                    year: 'numeric', 
+                    month: 'long', 
+                    day: 'numeric' 
+                  })}
+                  {selectedTime && ` o ${selectedTime}`}
+                </span>
+              )}
+            </div>
+            <Button variant="accent" onClick={handleReset}>
+              Zacznij od nowa
+            </Button>
+          </div>
+        )}
+
+        {/* Main content */}
+        <div className="space-y-6">
+          {/* Date & Time Selection */}
+          {currentView === 'datetime' && (
+            <Card padding="lg">
+              <CardHeader>
+                <CardTitle>Kiedy chciałbyś dokonać rezerwacji?</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-6">
+                <QuickDateSelector onSelect={setSelectedDate} />
+                
+                <DatePicker
+                  selectedDate={selectedDate}
+                  selectedTime={selectedTime}
+                  onDateChange={setSelectedDate}
+                  onTimeChange={setSelectedTime}
+                  label="Wybierz niestandardową datę i godzinę"
+                />
+
+                {error && (
+                  <div className="text-error text-sm bg-error/10 p-3 rounded-lg">
+                    {error}
+                  </div>
+                )}
+
+                <div className="flex justify-center pt-4">
+                  <Button 
+                    size="lg" 
+                    onClick={handleDateTimeNext}
+                    disabled={!selectedDate || !selectedTime}
+                  >
+                    Przejdź do wyboru stolika →
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Comprehensive Floor Plan */}
+          {currentView === 'floorplan' && (
+            <div ref={floorPlanRef}>
+              <FloorPlan
+                rooms={rooms}
+                allTables={allTables}
+                reservations={reservations}
+                selectedDate={selectedDate}
+                selectedTime={selectedTime}
+                onTableClick={handleTableClick}
+              />
+            </div>
+          )}
+
+          {/* Loading states */}
+          {loading && (
+            <Card>
+              <CardContent className="flex items-center justify-center py-12">
+                <div className="text-center">
+                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto mb-2"></div>
+                  <p className="text-base-content/70">Ładowanie...</p>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+        </div>
+
+        {/* Reservation Modal */}
+        <ReservationModal
+          isOpen={reservationModal.isOpen}
+          onClose={handleCloseReservationModal}
+          table={reservationModal.table}
+          selectedDate={selectedDate}
+          selectedTime={selectedTime}
+          onReservationCreated={handleReservationCreated}
+          existingReservation={reservationModal.existingReservation}
+        />
+      </div>
     </div>
   );
 }

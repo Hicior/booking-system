@@ -2,6 +2,7 @@
 
 # dependencies
 /node_modules
+package-lock.json
 /.pnp
 .pnp.*
 .yarn/*
@@ -39,3 +40,17 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Other
+.cursorrules
+docs/
+*.md
+src/scripts/
+
+# Debug output
+debug-output/
+
+# Logs & debug files
+logs/
+*.log
+debug-output/
