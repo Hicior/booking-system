@@ -31,7 +31,6 @@ export interface Employee {
   first_name: string;
   last_name: string;
   display_name: string;
-  employee_code?: string;
   is_active: boolean;
   created_at: Date;
   updated_at: Date;
@@ -41,7 +40,6 @@ export interface CreateEmployeeInput {
   first_name: string;
   last_name: string;
   display_name: string;
-  employee_code?: string;
   is_active?: boolean;
 }
 
@@ -49,7 +47,6 @@ export interface UpdateEmployeeInput {
   first_name?: string;
   last_name?: string;
   display_name?: string;
-  employee_code?: string;
   is_active?: boolean;
 }
 
@@ -146,7 +143,6 @@ export interface UpdateReservationInput {
   notes?: string;
   status?: 'active' | 'cancelled' | 'completed';
   complete_now?: boolean; // Signal to calculate actual duration for indefinite reservations
-  performed_by?: string; // Track who is making the update for activity logging
 }
 
 // Filter and query types
@@ -230,7 +226,6 @@ export interface ReservationActivityLog {
   id: string;
   reservation_id: string;
   action_type: 'updated' | 'cancelled';
-  performed_by?: string;
   performed_at: Date;
   field_changes?: Record<string, { old: any; new: any }>;
   reservation_snapshot: Record<string, any>;
@@ -248,7 +243,6 @@ export interface ActivityLogWithReservation extends ReservationActivityLog {
 export interface CreateActivityLogInput {
   reservation_id: string;
   action_type: 'updated' | 'cancelled';
-  performed_by?: string;
   field_changes?: Record<string, { old: any; new: any }>;
   reservation_snapshot?: Record<string, any>;
   notes?: string;
@@ -259,7 +253,6 @@ export interface CreateActivityLogInput {
 export interface ActivityLogFilters {
   reservation_id?: string;
   action_type?: 'updated' | 'cancelled';
-  performed_by?: string;
   performed_at_from?: Date | string;
   performed_at_to?: Date | string;
   guest_name?: string; // Search in reservation snapshot

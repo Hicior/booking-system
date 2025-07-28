@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 import { Navigation } from "@/components/Navigation";
 import { ToastProvider } from "@/components/ui";
+import { GlobalReservationMonitor } from "@/components/GlobalReservationMonitor";
 
 export const metadata: Metadata = {
   title: "System Rezerwacji - Pub Mentzen",
@@ -23,6 +24,7 @@ export default function RootLayout({
       </head>
       <body className="font-sans antialiased" suppressHydrationWarning={true}>
         <ToastProvider>
+          <GlobalReservationMonitor />
           <Navigation />
           {children}
         </ToastProvider>

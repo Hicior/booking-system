@@ -21,6 +21,7 @@ import {
 } from "./types";
 import { query, queryOne, transaction } from "./database";
 import { createServiceLogger, timeOperation, logError } from "./logger";
+import { normalizeTimeFormat } from "./api-client";
 
 // Employee Services
 export async function getEmployees(): Promise<Employee[]> {
@@ -44,161 +45,154 @@ export async function getEmployeeById(id: string): Promise<Employee | null> {
 }
 
 export async function createEmployee(data: CreateEmployeeInput): Promise<Employee> {
-  const logger = createServiceLogger('employee', 'create');
+  const logger = createServiceLogger('employees', 'create');
   
-  return timeOperation(logger, 'create_employee', async () => {
-    logger.debug({
+  try {
+    logger.debug({ 
       first_name: data.first_name,
       last_name: data.last_name,
-      display_name: data.display_name,
-      employee_code: data.employee_code,
-      is_active: data.is_active
+      display_name: data.display_name
     }, 'Creating new employee');
 
-    // Validate required fields
-    if (!data.first_name?.trim()) {
-      throw new Error("Imię jest wymagane");
-    }
-    if (!data.last_name?.trim()) {
-      throw new Error("Nazwisko jest wymagane");
-    }
-    if (!data.display_name?.trim()) {
-      throw new Error("Nazwa wyświetlana jest wymagana");
-    }
-
     // Check if display name is unique
-    const existingByDisplayName = await query<Employee>(
-      "SELECT id FROM employees WHERE LOWER(display_name) = LOWER($1)",
+    const existingDisplayName = await queryOne<{ id: string }>(
+      "SELECT id FROM employees WHERE display_name = $1",
       [data.display_name]
     );
-    if (existingByDisplayName.length > 0) {
+
+    if (existingDisplayName) {
       logger.warn({ display_name: data.display_name }, 'Attempted to create employee with duplicate display name');
-      throw new Error("Nazwa wyświetlana musi być unikalna");
+      throw new Error('Nazwa wyświetlana już istnieje');
     }
 
-    // Check if employee code is unique (if provided)
-    if (data.employee_code?.trim()) {
-      const existingByCode = await query<Employee>(
-        "SELECT id FROM employees WHERE employee_code = $1",
-        [data.employee_code]
-      );
-      if (existingByCode.length > 0) {
-        logger.warn({ employee_code: data.employee_code }, 'Attempted to create employee with duplicate code');
-        throw new Error("Kod pracownika musi być unikalny");
-      }
-    }
-
-    const employees = await query<Employee>(
-      `INSERT INTO employees (first_name, last_name, display_name, employee_code, is_active)
-       VALUES ($1, $2, $3, $4, $5)
+    const newEmployee = await queryOne<Employee>(
+      `INSERT INTO employees (first_name, last_name, display_name, is_active)
+       VALUES ($1, $2, $3, $4)
        RETURNING *`,
       [
         data.first_name.trim(),
         data.last_name.trim(),
         data.display_name.trim(),
-        data.employee_code?.trim() || null,
-        data.is_active !== false, // Default to true if not specified
+        data.is_active ?? true,
       ]
     );
 
-    if (employees.length === 0) {
-      throw new Error("Nie udało się utworzyć pracownika");
+    if (!newEmployee) {
+      throw new Error('Nie udało się utworzyć pracownika');
     }
 
-    const newEmployee = employees[0];
-    logger.info({
+    logger.info({ 
       employee_id: newEmployee.id,
-      display_name: newEmployee.display_name,
-      employee_code: newEmployee.employee_code
+      display_name: newEmployee.display_name 
     }, 'Employee created successfully');
 
-    return newEmployee;
-  });
+    return {
+      id: newEmployee.id,
+      first_name: newEmployee.first_name,
+      last_name: newEmployee.last_name,
+      display_name: newEmployee.display_name,
+      is_active: newEmployee.is_active,
+      created_at: newEmployee.created_at,
+      updated_at: newEmployee.updated_at,
+    };
+  } catch (error) {
+    logError(logger, error as Error, { 
+      context: 'create_employee_failed',
+      input_data: { 
+        first_name: data.first_name,
+        last_name: data.last_name,
+        display_name: data.display_name
+      }
+    });
+    throw error;
+  }
 }
 
 export async function updateEmployee(id: string, data: UpdateEmployeeInput): Promise<Employee> {
-  // Check if employee exists
-  const existingEmployee = await getEmployeeById(id);
-  if (!existingEmployee) {
-    throw new Error("Nie znaleziono pracownika");
-  }
+  const logger = createServiceLogger('employees', 'update');
+  
+  try {
+    logger.debug({ 
+      employee_id: id,
+      update_fields: Object.keys(data)
+    }, 'Updating employee');
 
-  // Validate required fields if provided
-  if (data.first_name !== undefined && !data.first_name?.trim()) {
-    throw new Error("Imię nie może być puste");
-  }
-  if (data.last_name !== undefined && !data.last_name?.trim()) {
-    throw new Error("Nazwisko nie może być puste");
-  }
-  if (data.display_name !== undefined && !data.display_name?.trim()) {
-    throw new Error("Nazwa wyświetlana nie może być pusta");
-  }
+    // Check if display name is unique (if being updated)
+    if (data.display_name?.trim()) {
+      const existingDisplayName = await queryOne<{ id: string }>(
+        "SELECT id FROM employees WHERE display_name = $1 AND id != $2",
+        [data.display_name, id]
+      );
 
-  // Check if display name is unique (excluding current employee)
-  if (data.display_name?.trim()) {
-    const existingByDisplayName = await query<Employee>(
-      "SELECT id FROM employees WHERE LOWER(display_name) = LOWER($1) AND id != $2",
-      [data.display_name, id]
-    );
-    if (existingByDisplayName.length > 0) {
-      throw new Error("Nazwa wyświetlana musi być unikalna");
+      if (existingDisplayName) {
+        logger.warn({ 
+          employee_id: id,
+          display_name: data.display_name 
+        }, 'Attempted to update employee with duplicate display name');
+        throw new Error('Nazwa wyświetlana już istnieje');
+      }
     }
-  }
 
-  // Check if employee code is unique (if provided and different from current)
-  if (data.employee_code?.trim()) {
-    const existingByCode = await query<Employee>(
-      "SELECT id FROM employees WHERE employee_code = $1 AND id != $2",
-      [data.employee_code, id]
-    );
-    if (existingByCode.length > 0) {
-      throw new Error("Kod pracownika musi być unikalny");
+    // Build dynamic update query
+    const updateFields: string[] = [];
+    const updateValues: any[] = [];
+    let paramCount = 1;
+
+    if (data.first_name !== undefined) {
+      updateFields.push(`first_name = $${paramCount++}`);
+      updateValues.push(data.first_name?.trim() || null);
     }
-  }
 
-  // Build update query dynamically
-  const updateFields: string[] = [];
-  const updateValues: any[] = [];
-  let paramCount = 1;
+    if (data.last_name !== undefined) {
+      updateFields.push(`last_name = $${paramCount++}`);
+      updateValues.push(data.last_name?.trim() || null);
+    }
 
-  if (data.first_name !== undefined) {
-    updateFields.push(`first_name = $${paramCount++}`);
-    updateValues.push(data.first_name.trim());
-  }
-  if (data.last_name !== undefined) {
-    updateFields.push(`last_name = $${paramCount++}`);
-    updateValues.push(data.last_name.trim());
-  }
-  if (data.display_name !== undefined) {
-    updateFields.push(`display_name = $${paramCount++}`);
-    updateValues.push(data.display_name.trim());
-  }
-  if (data.employee_code !== undefined) {
-    updateFields.push(`employee_code = $${paramCount++}`);
-    updateValues.push(data.employee_code?.trim() || null);
-  }
-  if (data.is_active !== undefined) {
-    updateFields.push(`is_active = $${paramCount++}`);
-    updateValues.push(data.is_active);
-  }
+    if (data.display_name !== undefined) {
+      updateFields.push(`display_name = $${paramCount++}`);
+      updateValues.push(data.display_name?.trim() || null);
+    }
 
-  if (updateFields.length === 0) {
-    return existingEmployee; // No changes to make
+    if (data.is_active !== undefined) {
+      updateFields.push(`is_active = $${paramCount++}`);
+      updateValues.push(data.is_active);
+    }
+
+    if (updateFields.length === 0) {
+      logger.warn({ employee_id: id }, 'No fields to update');
+      throw new Error('Brak pól do aktualizacji');
+    }
+
+    // Add WHERE clause parameter
+    updateValues.push(id);
+
+    const updatedEmployee = await queryOne<Employee>(
+      `UPDATE employees 
+       SET ${updateFields.join(', ')}
+       WHERE id = $${paramCount}
+       RETURNING *`,
+      updateValues
+    );
+
+    if (!updatedEmployee) {
+      logger.warn({ employee_id: id }, 'Employee not found for update');
+      throw new Error('Nie znaleziono pracownika');
+    }
+
+    logger.info({ 
+      employee_id: id,
+      updated_fields: Object.keys(data)
+    }, 'Employee updated successfully');
+
+    return updatedEmployee;
+  } catch (error) {
+    logError(logger, error as Error, { 
+      context: 'update_employee_failed',
+      employee_id: id,
+      update_data: data
+    });
+    throw error;
   }
-
-  updateFields.push(`updated_at = CURRENT_TIMESTAMP`);
-  updateValues.push(id);
-
-  const employees = await query<Employee>(
-    `UPDATE employees SET ${updateFields.join(", ")} WHERE id = $${paramCount} RETURNING *`,
-    updateValues
-  );
-
-  if (employees.length === 0) {
-    throw new Error("Nie udało się zaktualizować pracownika");
-  }
-
-  return employees[0];
 }
 
 export async function deleteEmployee(id: string): Promise<boolean> {
@@ -220,17 +214,7 @@ export async function deleteEmployee(id: string): Promise<boolean> {
     );
   }
 
-  // Check if employee is referenced in activity logs
-  const activityLogsCount = await query<{ count: number }>(
-    "SELECT COUNT(*) as count FROM reservation_activity_logs WHERE performed_by = $1",
-    [existingEmployee.display_name]
-  );
 
-  if (activityLogsCount[0]?.count > 0) {
-    throw new Error(
-      `Nie można usunąć pracownika "${existingEmployee.display_name}", ponieważ ma ${activityLogsCount[0].count} wpisów w logach aktywności. Dezaktywuj pracownika zamiast go usuwać.`
-    );
-  }
 
   // If no dependencies, proceed with deletion
   await query(
@@ -560,13 +544,32 @@ export async function updateReservation(
   try {
     const fieldChanges = calculateFieldChanges(currentReservation, data);
     
-    // Only create activity log if there are actual changes (excluding performed_by and complete_now)
-    if (Object.keys(fieldChanges).length > 0) {
-      await createActivityLog({
+    // Filter out status changes from "active" to "completed" 
+    // We want to log edits but not completion status changes
+    const filteredChanges = { ...fieldChanges };
+    
+    // Check if this is a completion operation (active → completed)
+    const isCompletion = filteredChanges.status && 
+        filteredChanges.status.old === 'active' && 
+        filteredChanges.status.new === 'completed';
+    
+    if (isCompletion) {
+      // Remove status change for completion
+      delete filteredChanges.status;
+      
+      // Also remove duration_hours change for completion 
+      // (it's automatically calculated, not a user edit)
+      if (filteredChanges.duration_hours) {
+        delete filteredChanges.duration_hours;
+      }
+    }
+    
+    // Only create activity log if there are actual changes after filtering
+    if (Object.keys(filteredChanges).length > 0) {
+      const activityLog = await createActivityLog({
         reservation_id: id,
         action_type: data.status === 'cancelled' ? 'cancelled' : 'updated',
-        performed_by: data.performed_by,
-        field_changes: fieldChanges,
+        field_changes: filteredChanges,
         reservation_snapshot: {
           id: result.id,
           table_id: result.table_id,
@@ -583,6 +586,13 @@ export async function updateReservation(
           created_by: result.created_by
         }
       });
+      
+      // activityLog will be null for system actions, which is expected
+      if (activityLog) {
+        console.log(`Activity log created for reservation ${id}`);
+      }
+    } else {
+      console.log(`No activity log created for reservation ${id} - only completion status change`);
     }
   } catch (activityLogError) {
     // Log the error but don't fail the reservation update
@@ -605,6 +615,18 @@ function calculateFieldChanges(
       return date.split('T')[0]; // Handle both YYYY-MM-DD and YYYY-MM-DDTHH:mm:ss formats
     }
     return date.toISOString().split('T')[0];
+  };
+
+  // Helper function to normalize duration_hours for comparison
+  const normalizeDuration = (duration: number): number => {
+    // Convert to number and handle special case of -1 (indefinite)
+    const num = Number(duration);
+    // For indefinite reservations, always use -1 (not -1.0)
+    if (num === -1 || num === -1.0) {
+      return -1;
+    }
+    // Round to 1 decimal place to avoid floating point precision issues
+    return Math.round(num * 10) / 10;
   };
 
   // Check each field that can be updated
@@ -650,18 +672,28 @@ function calculateFieldChanges(
     }
   }
 
-  if (updateData.reservation_time !== undefined && updateData.reservation_time !== currentReservation.reservation_time) {
-    changes.reservation_time = {
-      old: currentReservation.reservation_time,
-      new: updateData.reservation_time
-    };
+  if (updateData.reservation_time !== undefined) {
+    const normalizedNew = normalizeTimeFormat(updateData.reservation_time);
+    const normalizedCurrent = normalizeTimeFormat(currentReservation.reservation_time);
+    
+    if (normalizedNew !== normalizedCurrent) {
+      changes.reservation_time = {
+        old: normalizedCurrent,
+        new: normalizedNew
+      };
+    }
   }
 
-  if (updateData.duration_hours !== undefined && updateData.duration_hours !== currentReservation.duration_hours) {
-    changes.duration_hours = {
-      old: currentReservation.duration_hours,
-      new: updateData.duration_hours
-    };
+  if (updateData.duration_hours !== undefined) {
+    const normalizedNew = normalizeDuration(updateData.duration_hours);
+    const normalizedCurrent = normalizeDuration(currentReservation.duration_hours);
+    
+    if (normalizedNew !== normalizedCurrent) {
+      changes.duration_hours = {
+        old: normalizedCurrent,
+        new: normalizedNew
+      };
+    }
   }
 
   if (updateData.notes !== undefined && updateData.notes !== (currentReservation.notes || '')) {
@@ -870,7 +902,7 @@ export async function getReservations(
   }));
 }
 
-export async function deleteReservation(id: string, performed_by?: string): Promise<boolean> {
+export async function deleteReservation(id: string): Promise<boolean> {
   // Get the current reservation for activity logging
   const currentReservation = await getReservationById(id);
   if (!currentReservation) {
@@ -887,10 +919,9 @@ export async function deleteReservation(id: string, performed_by?: string): Prom
   // Create activity log for the cancellation
   if (success) {
     try {
-      await createActivityLog({
+      const activityLog = await createActivityLog({
         reservation_id: id,
         action_type: 'cancelled',
-        performed_by: performed_by,
         field_changes: {
           status: {
             old: currentReservation.status,
@@ -913,6 +944,11 @@ export async function deleteReservation(id: string, performed_by?: string): Prom
           created_by: currentReservation.created_by
         }
       });
+      
+      // activityLog will be null for system actions, which is expected
+      if (activityLog) {
+        console.log(`Activity log created for cancelled reservation ${id}`);
+      }
     } catch (activityLogError) {
       // Log the error but don't fail the reservation cancellation
       console.error('Failed to create activity log for cancellation:', activityLogError);
@@ -977,8 +1013,19 @@ export async function checkTableAvailability(
     AND reservation_date = $2 
     AND status = 'active'
     AND (
-      -- Indefinite reservations block from their start time onwards
-      (duration_hours = -1 AND reservation_time <= $3::time)
+      -- Indefinite reservations conflict if they start at/before new reservation start OR during new reservation duration
+      (duration_hours = -1 AND (
+        -- New reservation starts at or after indefinite start time
+        $3::time >= reservation_time
+        OR
+        -- Indefinite starts during our reservation time (with midnight crossover handling)
+        CASE 
+          WHEN ($3::time + ($4 || ' hours')::interval)::time >= $3::time
+          THEN reservation_time > $3::time AND reservation_time < ($3::time + ($4 || ' hours')::interval)::time
+          -- New reservation crosses midnight
+          ELSE reservation_time > $3::time OR reservation_time < ($3::time + ($4 || ' hours')::interval)::time
+        END
+      ))
       OR
       -- Regular time overlap check for finite durations with midnight crossover handling
       (
@@ -1163,14 +1210,18 @@ export async function searchReservations(
 // Time slot utilities
 export function generateTimeSlots(): string[] {
   const slots = [];
+  // Start from 12:00 (noon) to 23:45, then 00:00 to 02:00 with 15-minute intervals
   for (let hour = 12; hour < 24; hour++) {
-    slots.push(`${hour.toString().padStart(2, "0")}:00`);
-    slots.push(`${hour.toString().padStart(2, "0")}:30`);
+    for (let minute = 0; minute < 60; minute += 15) {
+      slots.push(`${hour.toString().padStart(2, "0")}:${minute.toString().padStart(2, "0")}`);
+    }
   }
-  // Add 00:00, 00:30, 01:00, 01:30, 02:00 for late night
+  // Add early morning slots (00:00 to 02:00) with 15-minute intervals
   for (let hour = 0; hour <= 2; hour++) {
-    slots.push(`${hour.toString().padStart(2, "0")}:00`);
-    if (hour < 2) slots.push(`${hour.toString().padStart(2, "0")}:30`);
+    for (let minute = 0; minute < 60; minute += 15) {
+      if (hour === 2 && minute > 0) break; // Stop at 02:00
+      slots.push(`${hour.toString().padStart(2, "0")}:${minute.toString().padStart(2, "0")}`);
+    }
   }
   return slots;
 }
@@ -1183,17 +1234,16 @@ export function formatTimeForDisplay(time: string): string {
 // Activity Log Services
 export async function createActivityLog(
   data: CreateActivityLogInput
-): Promise<ReservationActivityLog> {
+): Promise<ReservationActivityLog | null> {
   const result = await queryOne<ReservationActivityLog>(
     `
     SELECT log_reservation_activity(
-      $1, $2, $3, $4, $5, $6, $7, $8
+      $1, $2, $3, $4, $5, $6, $7
     ) as id
   `,
     [
       data.reservation_id,
       data.action_type,
-      data.performed_by,
       data.field_changes ? JSON.stringify(data.field_changes) : null,
       data.reservation_snapshot ? JSON.stringify(data.reservation_snapshot) : null,
       data.notes,
@@ -1214,6 +1264,8 @@ export async function createActivityLog(
   
   return createdLog;
 }
+
+
 
 export async function getActivityLogById(
   id: string
@@ -1246,10 +1298,7 @@ export async function getActivityLogs(
     values.push(filters.action_type);
   }
   
-  if (filters.performed_by) {
-    whereConditions.push(`ral.performed_by ILIKE $${paramIndex++}`);
-    values.push(`%${filters.performed_by}%`);
-  }
+
   
   if (filters.performed_at_from) {
     whereConditions.push(`ral.performed_at >= $${paramIndex++}`);
@@ -1280,7 +1329,6 @@ export async function getActivityLogs(
     whereConditions.push(`(
       ral.reservation_snapshot->>'guest_name' ILIKE $${paramIndex} OR
       ral.reservation_snapshot->>'guest_phone' ILIKE $${paramIndex} OR
-      ral.performed_by ILIKE $${paramIndex} OR
       t.table_number ILIKE $${paramIndex} OR
       rm.name ILIKE $${paramIndex}
     )`);
@@ -1313,7 +1361,6 @@ export async function getActivityLogs(
     id: row.id,
     reservation_id: row.reservation_id,
     action_type: row.action_type,
-    performed_by: row.performed_by,
     performed_at: row.performed_at,
     field_changes: row.field_changes,
     reservation_snapshot: row.reservation_snapshot,
@@ -1356,21 +1403,6 @@ export async function getActivityLogSummary(
     [cutoffDate]
   );
 
-  // Get activities by user
-  const userActivities = await query<{ user: string; count: number }>(
-    `
-    SELECT 
-      COALESCE(performed_by, 'Unknown') as user,
-      COUNT(*) as count
-    FROM reservation_activity_logs
-    WHERE performed_at >= $1
-    GROUP BY performed_by
-    ORDER BY count DESC
-    LIMIT 10
-  `,
-    [cutoffDate]
-  );
-
   // Get recent activities
   const recentActivities = await getActivityLogs({}, 10, 0);
 
@@ -1380,7 +1412,7 @@ export async function getActivityLogSummary(
       updated: parseInt(summaryResult.updated),
       cancelled: parseInt(summaryResult.cancelled),
     },
-    activities_by_user: userActivities,
+    activities_by_user: [], // No longer tracking by user
     recent_activities: recentActivities,
   };
 }
@@ -1429,8 +1461,7 @@ export async function autoCompleteExpiredReservations(): Promise<number> {
     for (const reservation of regularExpiredReservations) {
       try {
         await updateReservation(reservation.id, {
-          status: 'completed',
-          performed_by: 'System - Auto Completion'
+          status: 'completed'
         });
         completedCount++;
         
@@ -1484,8 +1515,7 @@ export async function autoCompleteExpiredReservations(): Promise<number> {
 
         await updateReservation(reservation.id, {
           status: 'completed',
-          duration_hours: actualDuration,
-          performed_by: 'System - Auto Completion'
+          duration_hours: actualDuration
         });
         completedCount++;
         

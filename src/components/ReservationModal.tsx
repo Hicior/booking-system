@@ -8,6 +8,7 @@ import {
   formatTimeForDisplay,
   getEmployees,
   checkTableAvailability,
+  normalizeTimeFormat,
 } from "@/lib/api-client";
 
 interface ReservationModalProps {
@@ -71,12 +72,7 @@ export function ReservationModal({
     }
   }, [isOpen]);
 
-  // Helper function to normalize time format (remove seconds if present)
-  const normalizeTimeFormat = (time: string): string => {
-    if (!time) return time;
-    // If time includes seconds (HH:MM:SS), remove them to get HH:MM
-    return time.split(':').slice(0, 2).join(':');
-  };
+
 
   // Helper function to safely convert date to string format without timezone issues
   const formatDateForInput = (date: Date | string): string => {
@@ -261,10 +257,7 @@ export function ReservationModal({
       };
 
       if (existingReservation) {
-        await updateReservation(existingReservation.id, {
-          ...reservationData,
-          performed_by: formData.created_by.trim()
-        });
+        await updateReservation(existingReservation.id, reservationData);
       } else {
         await createReservation(reservationData);
       }
@@ -346,7 +339,7 @@ export function ReservationModal({
     <Modal
       isOpen={isOpen}
       onClose={onClose}
-      title={`${existingReservation ? "Edytuj" : "Nowa"} rezerwacja - Stolik ${
+      title={`${existingReservation ? "Edytuj" : "Nowa"} rezerwacje - Stolik ${
         table.table_number
       }`}
       size="lg">
@@ -395,7 +388,7 @@ export function ReservationModal({
             onChange={(e) => handleInputChange("created_by", e.target.value)}
             options={employeeOptions}
             error={errors.created_by}
-            disabled={loadingEmployees}
+            disabled={loadingEmployees || !!existingReservation}
             fullWidth
           />
         </div>

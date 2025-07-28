@@ -1,0 +1,124 @@
+---
+description: Use when updating or reviewing/debuging database
+alwaysApply: false
+---
+
+# Database Script Guide
+
+## Quick Template
+
+```javascript
+const { Pool } = require('pg');
+
+// Load environment variables
+const dotenvResult = require('dotenv').config();
+if (dotenvResult.error) {
+  console.warn('⚠️ Warning: Could not load .env file:', dotenvResult.error.message);
+}
+
+// Database configuration
+const dbConfig = {
+  host: process.env.DB_HOST,
+  port: parseInt(process.env.DB_PORT),
+  database: process.env.DB_NAME,
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+};
+
+const pool = new Pool(dbConfig);
+
+async function yourMigrationFunction() {
+  const client = await pool.connect();
+  
+  try {
+    console.log('🔄 Starting migration...');
+    
+    // Check if migration already applied (make it idempotent)
+    const check = await client.query(`SELECT column_name FROM information_schema.columns 
+      WHERE table_name = 'your_table' AND column_name = 'your_column'`);
+    
+    if (check.rows.length > 0) {
+      console.log('ℹ️ Migration already applied');
+      return;
+    }
+    
+    // Use transactions for safety
+    await client.query('BEGIN');
+    
+    try {
+      // Your database changes here
+      await client.query(`ALTER TABLE your_table ADD COLUMN new_field VARCHAR(255)`);
+      await client.query(`UPDATE your_table SET new_field = 'default_value'`);
+      
+      await client.query('COMMIT');
+      console.log('✅ Migration completed successfully');
+      
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    }
+    
+  } catch (error) {
+    console.error('❌ Migration failed:', error.message);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function main() {
+  try {
+    await yourMigrationFunction();
+    console.log('🎉 Script completed!');
+    process.exit(0);
+  } catch (error) {
+    console.error('💥 Script failed');
+    process.exit(1);
+  }
+}
+
+if (require.main === module) {
+  main();
+}
+
+module.exports = { yourMigrationFunction };
+```
+
+## Steps to Create a New Script
+
+1. **Create file**: `src/scripts/your-script-name.js`
+2. **Add to package.json**: `"script-name": "node src/scripts/your-script-name.js"`
+3. **Test first**: Always test on a backup database
+4. **Run**: `npm run script-name`
+
+## Best Practices
+
+- ✅ **Always use transactions** (`BEGIN`/`COMMIT`/`ROLLBACK`)
+- ✅ **Make scripts idempotent** (safe to run multiple times)
+- ✅ **Check existing state** before making changes
+- ✅ **Use descriptive console messages** with emojis
+- ✅ **Handle errors gracefully** with proper exit codes
+- ✅ **Release database connections** in `finally` blocks
+
+## Common Patterns
+
+```javascript
+// Check if table exists
+const tableExists = await client.query(`SELECT to_regclass('public.table_name')`);
+if (!tableExists.rows[0].to_regclass) { /* table doesn't exist */ }
+
+// Check if column exists
+const columnExists = await client.query(`SELECT column_name FROM information_schema.columns 
+  WHERE table_name = 'table_name' AND column_name = 'column_name'`);
+
+// Check if constraint exists
+const constraintExists = await client.query(`SELECT constraint_name FROM information_schema.table_constraints 
+  WHERE table_name = 'table_name' AND constraint_name = 'constraint_name'`);
+
+// Conditional operations
+await client.query(`ALTER TABLE table_name DROP CONSTRAINT IF EXISTS constraint_name`);
+await client.query(`ALTER TABLE table_name ADD COLUMN IF NOT EXISTS new_column VARCHAR(255)`);
+```
+
+## Environment Variables Used
+- `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` (from `.env` file) 

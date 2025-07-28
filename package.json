@@ -8,7 +8,9 @@
     "start": "next start",
     "lint": "next lint",
     "clean-logs": "node src/scripts/cleanup-activity-logs.js",
-    "debug-db": "node src/scripts/debug-database.js"
+    "clear-all-logs": "node src/scripts/clear-all-activity-logs.js",
+    "debug-db": "node src/scripts/debug-database.js",
+    "remove-michal-reservations": "node src/scripts/remove-michal-lewandowski-reservations.js"
   },
   "dependencies": {
     "@types/pg": "^8.15.4",

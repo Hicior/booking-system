@@ -33,13 +33,7 @@ export async function PUT(
     const { id } = await params;
     const body: UpdateReservationInput = await request.json();
     
-    // Extract performed_by from headers or body
-    const performed_by = body.performed_by || request.headers.get('x-performed-by') || undefined;
-    
-    const reservation = await updateReservation(id, {
-      ...body,
-      performed_by
-    });
+    const reservation = await updateReservation(id, body);
     return NextResponse.json(reservation);
   } catch (error) {
     console.error('Error updating reservation:', error);
@@ -57,17 +51,7 @@ export async function DELETE(
   try {
     const { id } = await params;
     
-    // Try to get performed_by from request body or headers
-    let performed_by: string | undefined;
-    try {
-      const body = await request.json();
-      performed_by = body.performed_by;
-    } catch {
-      // If no body, try headers
-      performed_by = request.headers.get('x-performed-by') || undefined;
-    }
-    
-    const success = await deleteReservation(id, performed_by);
+    const success = await deleteReservation(id);
     if (!success) {
       return NextResponse.json(
         { error: 'Nie znaleziono rezerwacji' },

@@ -124,21 +124,18 @@ class ApiClient {
     });
   }
 
-  async deleteReservation(id: string, performed_by?: string): Promise<{ success: boolean }> {
-    const body = performed_by ? JSON.stringify({ performed_by }) : undefined;
+  async deleteReservation(id: string): Promise<{ success: boolean }> {
     return this.request<{ success: boolean }>(`/reservations/${id}`, {
       method: "DELETE",
-      body: body,
     });
   }
 
-  async completeReservation(id: string, performed_by?: string): Promise<Reservation> {
+  async completeReservation(id: string): Promise<Reservation> {
     return this.request<Reservation>(`/reservations/${id}`, {
       method: "PUT",
       body: JSON.stringify({ 
         status: "completed", 
-        complete_now: true,
-        performed_by 
+        complete_now: true
       }),
     });
   }
@@ -212,10 +209,10 @@ export const createReservation = (data: CreateReservationInput) =>
   apiClient.createReservation(data);
 export const updateReservation = (id: string, data: UpdateReservationInput) =>
   apiClient.updateReservation(id, data);
-export const deleteReservation = (id: string, performed_by?: string) =>
-  apiClient.deleteReservation(id, performed_by);
-export const completeReservation = (id: string, performed_by?: string) =>
-  apiClient.completeReservation(id, performed_by);
+export const deleteReservation = (id: string) =>
+  apiClient.deleteReservation(id);
+export const completeReservation = (id: string) =>
+  apiClient.completeReservation(id);
 export const autoCompleteExpiredReservations = () =>
   apiClient.autoCompleteExpiredReservations();
 export const checkTableAvailability = (
@@ -236,15 +233,18 @@ export const checkTableAvailability = (
 // Utility functions
 export function generateTimeSlots(): string[] {
   const slots = [];
-  // Start from 12:00 (noon) to 02:00 (next day)
+  // Start from 12:00 (noon) to 23:45, then 00:00 to 02:00 with 15-minute intervals
   for (let hour = 12; hour < 24; hour++) {
-    slots.push(`${hour.toString().padStart(2, "0")}:00`);
-    slots.push(`${hour.toString().padStart(2, "0")}:30`);
+    for (let minute = 0; minute < 60; minute += 15) {
+      slots.push(`${hour.toString().padStart(2, "0")}:${minute.toString().padStart(2, "0")}`);
+    }
   }
-  // Add early morning slots (00:00 to 02:00)
+  // Add early morning slots (00:00 to 02:00) with 15-minute intervals
   for (let hour = 0; hour <= 2; hour++) {
-    slots.push(`${hour.toString().padStart(2, "0")}:00`);
-    if (hour < 2) slots.push(`${hour.toString().padStart(2, "0")}:30`);
+    for (let minute = 0; minute < 60; minute += 15) {
+      if (hour === 2 && minute > 0) break; // Stop at 02:00
+      slots.push(`${hour.toString().padStart(2, "0")}:${minute.toString().padStart(2, "0")}`);
+    }
   }
   return slots;
 }
@@ -253,4 +253,11 @@ export function formatTimeForDisplay(time: string): string {
   const [hours, minutes] = time.split(':');
   const hour = parseInt(hours);
   return `${hour.toString().padStart(2, '0')}:${minutes}`;
+}
+
+// Helper function to normalize time format (remove seconds if present)
+// Converts "06:30:00" to "06:30" or keeps "06:30" as is
+export function normalizeTimeFormat(time: string): string {
+  if (!time) return time;
+  return time.split(':').slice(0, 2).join(':');
 }

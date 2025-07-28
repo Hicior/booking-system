@@ -18,7 +18,7 @@ import {
   getEmployees,
   autoCompleteExpiredReservations,
 } from "@/lib/api-client";
-import { useReservationMonitor } from "@/hooks/useReservationMonitor";
+
 
 interface ReservationsListProps {
   rooms: Room[];
@@ -225,21 +225,17 @@ export function ReservationsList({
     reservationId: string,
     isPastDate: boolean = false
   ) => {
-    const action = isPastDate ? "usunąć" : "anulować";
-    const confirmMessage = isPastDate
-      ? "Czy na pewno chcesz trwale usunąć tę rezerwację?"
-      : "Czy na pewno chcesz anulować tę rezerwację?";
+    const action = "anulować";
+    const confirmMessage = "Czy na pewno chcesz anulować tę rezerwację?";
 
     if (!confirm(confirmMessage)) return;
 
     try {
-      // TODO: Get actual employee name from user context or form
-      const performed_by = "Employee"; // Placeholder - should be replaced with actual employee
-      const result = await deleteReservation(reservationId, performed_by);
+      const result = await deleteReservation(reservationId);
       if (result.success) {
-        // If we cancelled a reservation (not deleted) and are currently showing only active,
+        // If we cancelled a reservation and are currently showing only active,
         // switch to show all so the user can see the cancelled reservation
-        if (!isPastDate && filters.status === "active") {
+        if (filters.status === "active") {
           setFilters(prev => ({ ...prev, status: "all" }));
         }
         
@@ -256,9 +252,7 @@ export function ReservationsList({
     if (!confirm("Czy na pewno chcesz oznaczyć tę rezerwację jako zakończoną?")) return;
 
     try {
-      // TODO: Get actual employee name from user context or form
-      const performed_by = "Employee"; // Placeholder - should be replaced with actual employee
-      const updatedReservation = await completeReservation(reservationId, performed_by);
+      const updatedReservation = await completeReservation(reservationId);
       // Update the reservation in the list instead of removing it
       setReservations((prev) => 
         prev.map((r) => r.id === reservationId ? { ...r, ...updatedReservation } : r)
@@ -302,23 +296,7 @@ export function ReservationsList({
     }
   };
 
-  // Transform reservations for monitoring hook
-  const activeReservationsForMonitoring = reservations
-    .filter(r => r.status === 'active' && Number(r.duration_hours) === -1)
-    .map(r => ({
-      id: r.id,
-      guest_name: r.guest_name,
-      table_number: r.table.table_number,
-      room_name: rooms.find(room => room.id === r.table.room_id)?.name || 'Unknown',
-      reservation_time: r.reservation_time,
-      duration_hours: r.duration_hours,
-    }));
 
-  // Use reservation monitoring hook
-  useReservationMonitor({
-    reservations: activeReservationsForMonitoring,
-    onReservationCompleted: handleReservationUpdated,
-  });
 
   // Helper function to check if reservation has started
   const hasReservationStarted = (reservation: ReservationWithTableAndRoom) => {
@@ -378,13 +356,18 @@ export function ReservationsList({
 
   const generateTimeSlots = () => {
     const slots = [];
+    // Start from 12:00 (noon) to 23:45, then 00:00 to 02:00 with 15-minute intervals
     for (let hour = 12; hour < 24; hour++) {
-      slots.push(`${hour.toString().padStart(2, "0")}:00`);
-      slots.push(`${hour.toString().padStart(2, "0")}:30`);
+      for (let minute = 0; minute < 60; minute += 15) {
+        slots.push(`${hour.toString().padStart(2, "0")}:${minute.toString().padStart(2, "0")}`);
+      }
     }
+    // Add early morning slots (00:00 to 02:00) with 15-minute intervals
     for (let hour = 0; hour <= 2; hour++) {
-      slots.push(`${hour.toString().padStart(2, "0")}:00`);
-      if (hour < 2) slots.push(`${hour.toString().padStart(2, "0")}:30`);
+      for (let minute = 0; minute < 60; minute += 15) {
+        if (hour === 2 && minute > 0) break; // Stop at 02:00
+        slots.push(`${hour.toString().padStart(2, "0")}:${minute.toString().padStart(2, "0")}`);
+      }
     }
     return slots;
   };
@@ -638,7 +621,7 @@ export function ReservationsList({
                                     isSelectedDateInPast
                                   )
                                 }>
-                                {isSelectedDateInPast ? "Usuń" : "Anuluj"}
+                                Anuluj
                               </Button>
                             </>
                           ) : (

@@ -74,7 +74,6 @@ CREATE TABLE reservation_activity_logs (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     reservation_id UUID NOT NULL REFERENCES reservations(id) ON DELETE CASCADE,
     action_type VARCHAR(20) NOT NULL, -- 'updated', 'cancelled'
-    performed_by VARCHAR(100),
     performed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     field_changes JSONB, -- JSON object containing old/new values
     reservation_snapshot JSONB NOT NULL, -- Full reservation data snapshot
@@ -101,11 +100,9 @@ CREATE INDEX idx_activity_logs_action_type ON reservation_activity_logs(action_t
 CREATE INDEX idx_activity_logs_changes ON reservation_activity_logs USING gin(field_changes);
 CREATE INDEX idx_activity_logs_date_range ON reservation_activity_logs(performed_at DESC);
 CREATE INDEX idx_activity_logs_performed_at ON reservation_activity_logs(performed_at);
-CREATE INDEX idx_activity_logs_performed_by ON reservation_activity_logs(performed_by);
 CREATE INDEX idx_activity_logs_reservation_date ON reservation_activity_logs(reservation_id, performed_at DESC);
 CREATE INDEX idx_activity_logs_reservation_id ON reservation_activity_logs(reservation_id);
 CREATE INDEX idx_activity_logs_snapshot ON reservation_activity_logs USING gin(reservation_snapshot);
-CREATE INDEX idx_activity_logs_user_date ON reservation_activity_logs(performed_by, performed_at DESC);
 
 -- Function to update updated_at timestamp
 CREATE OR REPLACE FUNCTION update_updated_at_column()
@@ -195,7 +192,6 @@ $$ language 'plpgsql';
 CREATE OR REPLACE FUNCTION log_reservation_activity(
     p_reservation_id UUID,
     p_action_type VARCHAR(20),
-    p_performed_by VARCHAR(100) DEFAULT NULL,
     p_field_changes JSONB DEFAULT NULL,
     p_reservation_snapshot JSONB DEFAULT NULL,
     p_notes TEXT DEFAULT NULL,
@@ -224,7 +220,6 @@ BEGIN
     INSERT INTO reservation_activity_logs (
         reservation_id,
         action_type,
-        performed_by,
         field_changes,
         reservation_snapshot,
         notes,
@@ -233,7 +228,6 @@ BEGIN
     ) VALUES (
         p_reservation_id,
         p_action_type,
-        p_performed_by,
         p_field_changes,
         current_reservation_data,
         p_notes,

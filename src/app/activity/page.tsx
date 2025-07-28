@@ -10,7 +10,6 @@ import { logApiError } from '@/lib/client-logger';
 interface ActivityFilters {
   search: string;
   actionType: string;
-  performedBy: string;
   dateFrom: string;
   dateTo: string;
   roomId: string;
@@ -24,7 +23,6 @@ export default function ActivityPage() {
   const [filters, setFilters] = useState<ActivityFilters>({
     search: '',
     actionType: '',
-    performedBy: '',
     dateFrom: '',
     dateTo: '',
     roomId: '',
@@ -47,7 +45,6 @@ export default function ActivityPage() {
         params.append('search', currentFilters.search);
       } else {
         if (currentFilters.actionType) params.append('action_type', currentFilters.actionType);
-        if (currentFilters.performedBy) params.append('performed_by', currentFilters.performedBy);
         if (currentFilters.dateFrom) params.append('performed_at_from', currentFilters.dateFrom);
         if (currentFilters.dateTo) params.append('performed_at_to', currentFilters.dateTo);
         if (currentFilters.roomId) params.append('room_id', currentFilters.roomId);
@@ -93,7 +90,6 @@ export default function ActivityPage() {
     const clearedFilters = {
       search: '',
       actionType: '',
-      performedBy: '',
       dateFrom: '',
       dateTo: '',
       roomId: '',
@@ -209,14 +205,14 @@ export default function ActivityPage() {
         <Card className="p-6 mb-6">
           <h2 className="text-xl font-semibold text-base-content mb-4">Filtry</h2>
           
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
             <div>
               <label className="block text-sm font-medium text-base-content mb-2">
                 Wyszukaj
               </label>
               <Input
                 type="text"
-                placeholder="Imię gościa, telefon, pracownik..."
+                placeholder="Nazwisko gościa, telefon..."
                 value={filters.search}
                 onChange={(e) => handleFilterChange('search', e.target.value)}
               />
@@ -235,18 +231,6 @@ export default function ActivityPage() {
                 <option value="updated">Zaktualizowano</option>
                 <option value="cancelled">Anulowano</option>
               </select>
-            </div>
-            
-            <div>
-              <label className="block text-sm font-medium text-base-content mb-2">
-                Pracownik
-              </label>
-              <Input
-                type="text"
-                placeholder="Nazwa pracownika"
-                value={filters.performedBy}
-                onChange={(e) => handleFilterChange('performedBy', e.target.value)}
-              />
             </div>
             
             <div>
@@ -321,9 +305,6 @@ export default function ActivityPage() {
                   </div>
                   
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
-                    <div>
-                      <span className="font-medium">Pracownik:</span> {log.performed_by || 'System'}
-                    </div>
                     {log.reservation_snapshot?.guest_phone && (
                       <div>
                         <span className="font-medium">Telefon:</span> {log.reservation_snapshot.guest_phone}

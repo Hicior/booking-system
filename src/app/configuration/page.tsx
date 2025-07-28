@@ -8,7 +8,6 @@ interface EmployeeFormData {
   first_name: string;
   last_name: string;
   display_name: string;
-  employee_code: string;
   is_active: boolean;
 }
 
@@ -16,7 +15,6 @@ const defaultFormData: EmployeeFormData = {
   first_name: '',
   last_name: '',
   display_name: '',
-  employee_code: '',
   is_active: true,
 };
 
@@ -55,14 +53,7 @@ export default function ConfigurationPage() {
         }
       }
 
-      // Check activity logs  
-      const activityResponse = await fetch(`/api/activity-logs?performed_by=${encodeURIComponent(employee.display_name)}`);
-      if (activityResponse.ok) {
-        const activities = await activityResponse.json();
-        if (activities.length > 0) {
-          return false;
-        }
-      }
+
 
       return true;
     } catch (error) {
@@ -125,17 +116,6 @@ export default function ConfigurationPage() {
     );
     if (existingEmployee) {
       errors.display_name = 'Nazwa wyświetlana musi być unikalna';
-    }
-
-    // Check if employee code is unique (if provided)
-    if (formData.employee_code.trim()) {
-      const existingCode = employees.find(emp => 
-        emp.employee_code === formData.employee_code &&
-        emp.id !== modal.employee?.id
-      );
-      if (existingCode) {
-        errors.employee_code = 'Kod pracownika musi być unikalny';
-      }
     }
 
     setFormErrors(errors);
@@ -274,7 +254,6 @@ export default function ConfigurationPage() {
       first_name: employee.first_name,
       last_name: employee.last_name,
       display_name: employee.display_name,
-      employee_code: employee.employee_code || '',
       is_active: employee.is_active,
     });
     setFormErrors({});
@@ -375,7 +354,6 @@ export default function ConfigurationPage() {
                       <th className="text-left py-3 px-2">Imię</th>
                       <th className="text-left py-3 px-2">Nazwisko</th>
                       <th className="text-left py-3 px-2">Nazwa wyświetlana</th>
-                      <th className="text-left py-3 px-2">Kod pracownika</th>
                       <th className="text-left py-3 px-2">Status</th>
                       <th className="text-left py-3 px-2">Data utworzenia</th>
                       <th className="text-left py-3 px-2">
@@ -395,7 +373,6 @@ export default function ConfigurationPage() {
                         <td className="py-3 px-2">{employee.first_name}</td>
                         <td className="py-3 px-2">{employee.last_name}</td>
                         <td className="py-3 px-2 font-medium">{employee.display_name}</td>
-                        <td className="py-3 px-2">{employee.employee_code || '-'}</td>
                         <td className="py-3 px-2">
                           <span
                             className={`px-2 py-1 rounded-full text-xs font-medium ${
@@ -542,14 +519,6 @@ export default function ConfigurationPage() {
               value={formData.display_name}
               onChange={(e) => setFormData(prev => ({ ...prev, display_name: e.target.value }))}
               error={formErrors.display_name}
-              fullWidth
-            />
-
-            <Input
-              label="Kod pracownika (opcjonalny)"
-              value={formData.employee_code}
-              onChange={(e) => setFormData(prev => ({ ...prev, employee_code: e.target.value }))}
-              error={formErrors.employee_code}
               fullWidth
             />
 

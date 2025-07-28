@@ -48,7 +48,6 @@ export async function GET(request: Request) {
     const filters: ActivityLogFilters = {
       reservation_id: searchParams.get('reservation_id') || undefined,
       action_type: searchParams.get('action_type') as any || undefined,
-      performed_by: searchParams.get('performed_by') || undefined,
       performed_at_from: searchParams.get('performed_at_from') || undefined,
       performed_at_to: searchParams.get('performed_at_to') || undefined,
       guest_name: searchParams.get('guest_name') || undefined,

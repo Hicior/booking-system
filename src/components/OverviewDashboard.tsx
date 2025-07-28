@@ -10,7 +10,7 @@ import {
   generateTimeSlots,
   formatTimeForDisplay,
 } from "@/lib/api-client";
-import { useReservationMonitor } from "@/hooks/useReservationMonitor";
+
 
 interface OverviewDashboardProps {
   selectedDate: string;
@@ -200,28 +200,7 @@ export function OverviewDashboard({
     }
   };
 
-  // Transform reservations for monitoring hook
-  const activeReservationsForMonitoring = reservations
-    .filter(r => r.status === 'active' && Number(r.duration_hours) === -1)
-    .map(r => {
-      const table = allTables.find(t => t.id === r.table_id);
-      const room = rooms.find(room => room.id === table?.room_id);
-      
-      return {
-        id: r.id,
-        guest_name: r.guest_name,
-        table_number: table?.table_number || 'Unknown',
-        room_name: room?.name || 'Unknown',
-        reservation_time: r.reservation_time,
-        duration_hours: r.duration_hours,
-      };
-    });
 
-  // Use reservation monitoring hook
-  useReservationMonitor({
-    reservations: activeReservationsForMonitoring,
-    onReservationCompleted: handleReservationCreated,
-  });
 
   if (loading) {
     return (
