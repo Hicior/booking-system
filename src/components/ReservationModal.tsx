@@ -243,6 +243,15 @@ export function ReservationModal({
     if (!validateForm() || !table) return;
 
     setLoading(true);
+    
+    // Clear any previous errors
+    setErrors(prev => {
+      const newErrors = { ...prev };
+      delete newErrors.submit;
+      delete newErrors.availability;
+      return newErrors;
+    });
+    
     try {
       const reservationData: CreateReservationInput = {
         table_id: table.id,
@@ -267,19 +276,77 @@ export function ReservationModal({
     } catch (error) {
       console.error("Error saving reservation:", error);
       
-      // Parse database error for better user feedback
+      // Enhanced error handling with specific race condition detection
       let errorMessage = "Nie udało się zapisać rezerwacji";
+      let shouldRefreshAvailability = false;
+      
       if (error instanceof Error) {
-        if (error.message.includes("conflicts with existing reservation")) {
-          errorMessage = "Ten stolik jest już zarezerwowany w wybranym czasie. Proszę wybrać inną godzinę.";
-        } else {
-          errorMessage = error.message;
+        switch (error.message) {
+          case "TABLE_UNAVAILABLE":
+            errorMessage = "⚠️ Ten stolik został właśnie zarezerwowany przez inną osobę. Proszę wybrać inną godzinę lub sprawdzić dostępność ponownie.";
+            shouldRefreshAvailability = true;
+            break;
+          case "RACE_CONDITION_DETECTED":
+            errorMessage = "🔄 Stolik był sprawdzany przez inną osobę. Spróbuj ponownie za chwilę.";
+            shouldRefreshAvailability = true;
+            break;
+          default:
+            if (error.message.includes("conflicts with existing reservation") ||
+                error.message.includes("Reservation conflicts")) {
+              errorMessage = "❌ Konflikt rezerwacji: Ten stolik jest już zarezerwowany w wybranym czasie. Proszę wybrać inną godzinę.";
+              shouldRefreshAvailability = true;
+            } else if (error.message.includes("Cannot complete a reservation")) {
+              errorMessage = "Nie można zakończyć rezerwacji, która jeszcze się nie rozpoczęła.";
+            } else {
+              errorMessage = error.message;
+            }
+            break;
         }
       }
       
       setErrors({
         submit: errorMessage,
       });
+      
+      // Refresh availability check if there was a race condition
+      if (shouldRefreshAvailability) {
+        // Reset availability state to trigger a fresh check
+        setIsAvailable(null);
+        setLastCheckedTime("");
+        setLastCheckedDuration(0);
+        
+        // Trigger immediate availability recheck
+        setTimeout(async () => {
+          if (table && formData.reservation_time && formData.reservation_date) {
+            setCheckingAvailability(true);
+            try {
+              const available = await checkTableAvailability(
+                table.id,
+                formData.reservation_date,
+                formData.reservation_time,
+                formData.duration_hours,
+                existingReservation?.id
+              );
+              
+              setIsAvailable(available);
+              setLastCheckedTime(formData.reservation_time);
+              setLastCheckedDuration(formData.duration_hours);
+              
+              if (!available) {
+                setErrors(prev => ({
+                  ...prev,
+                  availability: "Stolik nie jest już dostępny w wybranym czasie. Proszę wybrać inną godzinę."
+                }));
+              }
+            } catch (checkError) {
+              console.error("Error rechecking availability:", checkError);
+              setIsAvailable(null);
+            } finally {
+              setCheckingAvailability(false);
+            }
+          }
+        }, 500);
+      }
     } finally {
       setLoading(false);
     }

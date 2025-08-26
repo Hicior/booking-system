@@ -20,8 +20,43 @@ import {
   ReservationWithActivity,
 } from "./types";
 import { query, queryOne, transaction } from "./database";
+import type { PoolClient } from "pg";
 import { createServiceLogger, timeOperation, logError } from "./logger";
 import { normalizeTimeFormat } from "./api-client";
+
+// Date utility functions for consistent timezone handling
+function normalizeDateForDb(date: Date | string): string {
+  // Ensure date is stored as YYYY-MM-DD format without timezone conversion
+  if (typeof date === 'string') {
+    // If it's already a string, ensure it's in the correct format
+    return date.split('T')[0]; // Remove time part if present
+  }
+  
+  if (date instanceof Date) {
+    // Format date as YYYY-MM-DD using local date components
+    // This avoids timezone conversion issues
+    const year = date.getFullYear();
+    const month = (date.getMonth() + 1).toString().padStart(2, '0');
+    const day = date.getDate().toString().padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+  
+  throw new Error('Invalid date format');
+}
+
+function formatDateForDisplay(date: Date | string): string {
+  // Format date for display in Polish format (DD.MM.YYYY)
+  if (typeof date === 'string') {
+    const parsedDate = new Date(date + 'T12:00:00'); // Add noon time to avoid timezone issues
+    return parsedDate.toLocaleDateString('pl-PL');
+  }
+  
+  if (date instanceof Date) {
+    return date.toLocaleDateString('pl-PL');
+  }
+  
+  return '';
+}
 
 // Employee Services
 export async function getEmployees(): Promise<Employee[]> {
@@ -383,13 +418,15 @@ export async function getAllTablesWithRooms(): Promise<Table[]> {
   `);
 }
 
-// Reservation Services
+// Enhanced reservation creation with race condition protection
 export async function createReservation(
-  data: CreateReservationInput
+  data: CreateReservationInput,
+  options: { maxRetries?: number; skipFinalAvailabilityCheck?: boolean } = {}
 ): Promise<Reservation> {
+  const { maxRetries = 3, skipFinalAvailabilityCheck = false } = options;
   const logger = createServiceLogger('reservation', 'create');
   
-  return timeOperation(logger, 'create_reservation', async () => {
+  return timeOperation(logger, 'create_reservation_with_race_protection', async () => {
     logger.debug({
       table_id: data.table_id,
       guest_name: data.guest_name,
@@ -398,43 +435,126 @@ export async function createReservation(
       reservation_date: data.reservation_date,
       reservation_time: data.reservation_time,
       duration_hours: data.duration_hours || 2,
-      created_by: data.created_by
-    }, 'Creating new reservation');
+      created_by: data.created_by,
+      max_retries: maxRetries
+    }, 'Creating new reservation with race condition protection');
 
-    const result = await queryOne<Reservation>(
-      `
-      INSERT INTO reservations (
-        table_id, guest_name, guest_phone, party_size, 
-        reservation_date, reservation_time, duration_hours, notes, created_by
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-      RETURNING *
-    `,
-      [
-        data.table_id,
-        data.guest_name,
-        data.guest_phone,
-        data.party_size,
-        data.reservation_date,
-        data.reservation_time,
-        data.duration_hours || 2,
-        data.notes,
-        data.created_by,
-      ]
-    );
+    // Normalize date to ensure proper storage without timezone conversion
+    const normalizedDate = normalizeDateForDb(data.reservation_date);
 
-    if (!result) {
-      throw new Error("Failed to create reservation");
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        // Final availability check right before insertion (unless explicitly skipped)
+        if (!skipFinalAvailabilityCheck) {
+          const isStillAvailable = await checkTableAvailability(
+            data.table_id,
+            normalizedDate,
+            data.reservation_time,
+            data.duration_hours || 2
+          );
+
+          if (!isStillAvailable) {
+            logger.warn({
+              table_id: data.table_id,
+              date: normalizedDate,
+              time: data.reservation_time,
+              attempt
+            }, 'Table became unavailable before insertion - race condition detected');
+            
+            throw new Error("RACE_CONDITION_DETECTED");
+          }
+        }
+
+        // Attempt to create the reservation
+        const result = await queryOne<Reservation>(
+          `
+          INSERT INTO reservations (
+            table_id, guest_name, guest_phone, party_size, 
+            reservation_date, reservation_time, duration_hours, notes, created_by
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+          RETURNING *
+        `,
+          [
+            data.table_id,
+            data.guest_name,
+            data.guest_phone,
+            data.party_size,
+            normalizedDate,
+            data.reservation_time,
+            data.duration_hours || 2,
+            data.notes,
+            data.created_by,
+          ]
+        );
+
+        if (!result) {
+          throw new Error("Failed to create reservation");
+        }
+
+        logger.info({
+          reservation_id: result.id,
+          table_id: result.table_id,
+          guest_name: result.guest_name,
+          reservation_date: result.reservation_date,
+          reservation_time: result.reservation_time,
+          attempt,
+          success: true
+        }, 'Reservation created successfully');
+
+        return result;
+
+      } catch (error: any) {
+        const isConstraintViolation = error.message && (
+          error.message.includes('conflicts with existing reservation') ||
+          error.message.includes('Reservation conflicts') ||
+          error.code === '23514' || // Check constraint violation
+          error.constraint?.includes('overlap') ||
+          error.message === "RACE_CONDITION_DETECTED"
+        );
+
+        if (isConstraintViolation) {
+          logger.warn({
+            table_id: data.table_id,
+            date: normalizedDate,
+            time: data.reservation_time,
+            attempt,
+            max_retries: maxRetries,
+            error_message: error.message,
+            error_code: error.code
+          }, 'Reservation conflict detected');
+
+          if (attempt < maxRetries) {
+            // Brief delay before retry to reduce contention
+            await new Promise(resolve => setTimeout(resolve, 100 * attempt));
+            logger.debug({ attempt, next_attempt: attempt + 1 }, 'Retrying reservation creation');
+            continue;
+          } else {
+            // Final attempt failed - provide user-friendly error
+            logger.error({
+              table_id: data.table_id,
+              date: normalizedDate,
+              time: data.reservation_time,
+              final_attempt: attempt
+            }, 'Reservation creation failed after all retries');
+
+            throw new Error("TABLE_UNAVAILABLE");
+          }
+        } else {
+          // Non-constraint violation error - don't retry
+          logger.error({
+            table_id: data.table_id,
+            error_message: error.message,
+            error_code: error.code,
+            attempt
+          }, 'Reservation creation failed with non-conflict error');
+          
+          throw error;
+        }
+      }
     }
 
-    logger.info({
-      reservation_id: result.id,
-      table_id: result.table_id,
-      guest_name: result.guest_name,
-      reservation_date: result.reservation_date,
-      reservation_time: result.reservation_time
-    }, 'Reservation created successfully');
-
-    return result;
+    // This should never be reached, but TypeScript requires it
+    throw new Error("Unexpected error in reservation creation");
   });
 }
 
@@ -442,106 +562,48 @@ export async function updateReservation(
   id: string,
   data: UpdateReservationInput & { complete_now?: boolean }
 ): Promise<Reservation> {
-  // Get the current reservation for activity logging
-  const currentReservation = await getReservationById(id);
-  if (!currentReservation) {
-    throw new Error("Reservation not found");
-  }
-
-  // If completing an indefinite reservation, calculate actual duration
-  if (data.complete_now && data.status === 'completed') {
-    // Only calculate if it's an indefinite reservation
-    if (Number(currentReservation.duration_hours) === -1) {
-      const now = new Date();
-      const [startHours, startMinutes] = currentReservation.reservation_time.split(':').map(Number);
-      
-      // Parse reservation date safely - handle both string and Date inputs
-      const resDateString = typeof currentReservation.reservation_date === 'string' 
-        ? currentReservation.reservation_date 
-        : currentReservation.reservation_date.toISOString().split('T')[0];
-      
-      // Create start time using the reservation date
-      const startTime = new Date(resDateString + 'T00:00:00');
-      startTime.setHours(startHours, startMinutes, 0, 0);
-      
-      // Calculate duration in milliseconds
-      const durationMs = now.getTime() - startTime.getTime();
-      
-      // Ensure positive duration (reservation must have started)
-      if (durationMs <= 0) {
-        throw new Error("Cannot complete a reservation that hasn't started yet");
-      }
-      
-      // Convert to decimal hours (e.g., 2h 30min = 2.5h)
-      const actualDuration = durationMs / (1000 * 60 * 60);
-      
-      // Update duration_hours with the calculated value
-      data.duration_hours = Math.max(0.1, Math.round(actualDuration * 10) / 10); // Round to 1 decimal place, minimum 6 minutes (0.1h)
+  const logger = createServiceLogger('reservation', 'update');
+  
+  return timeOperation(logger, 'update_reservation_with_activity_log', async () => {
+    // Get the current reservation for activity logging (outside transaction for validation)
+    const currentReservation = await getReservationById(id);
+    if (!currentReservation) {
+      throw new Error("Reservation not found");
     }
-  }
 
-  const fields = [];
-  const values = [];
-  let paramIndex = 1;
+    // If completing an indefinite reservation, calculate actual duration
+    if (data.complete_now && data.status === 'completed') {
+      // Only calculate if it's an indefinite reservation
+      if (Number(currentReservation.duration_hours) === -1) {
+        const now = new Date();
+        const [startHours, startMinutes] = currentReservation.reservation_time.split(':').map(Number);
+        
+        // Parse reservation date safely - handle both string and Date inputs
+        const resDateString = typeof currentReservation.reservation_date === 'string' 
+          ? currentReservation.reservation_date 
+          : currentReservation.reservation_date.toISOString().split('T')[0];
+        
+        // Create start time using the reservation date
+        const startTime = new Date(resDateString + 'T00:00:00');
+        startTime.setHours(startHours, startMinutes, 0, 0);
+        
+        // Calculate duration in milliseconds
+        const durationMs = now.getTime() - startTime.getTime();
+        
+        // Ensure positive duration (reservation must have started)
+        if (durationMs <= 0) {
+          throw new Error("Cannot complete a reservation that hasn't started yet");
+        }
+        
+        // Convert to decimal hours (e.g., 2h 30min = 2.5h)
+        const actualDuration = durationMs / (1000 * 60 * 60);
+        
+        // Update duration_hours with the calculated value
+        data.duration_hours = Math.max(0.1, Math.round(actualDuration * 10) / 10); // Round to 1 decimal place, minimum 6 minutes (0.1h)
+      }
+    }
 
-  if (data.table_id !== undefined) {
-    fields.push(`table_id = $${paramIndex++}`);
-    values.push(data.table_id);
-  }
-  if (data.guest_name !== undefined) {
-    fields.push(`guest_name = $${paramIndex++}`);
-    values.push(data.guest_name);
-  }
-  if (data.guest_phone !== undefined) {
-    fields.push(`guest_phone = $${paramIndex++}`);
-    values.push(data.guest_phone);
-  }
-  if (data.party_size !== undefined) {
-    fields.push(`party_size = $${paramIndex++}`);
-    values.push(data.party_size);
-  }
-  if (data.reservation_date !== undefined) {
-    fields.push(`reservation_date = $${paramIndex++}`);
-    values.push(data.reservation_date);
-  }
-  if (data.reservation_time !== undefined) {
-    fields.push(`reservation_time = $${paramIndex++}`);
-    values.push(data.reservation_time);
-  }
-  if (data.duration_hours !== undefined) {
-    fields.push(`duration_hours = $${paramIndex++}`);
-    values.push(data.duration_hours);
-  }
-  if (data.notes !== undefined) {
-    fields.push(`notes = $${paramIndex++}`);
-    values.push(data.notes);
-  }
-  if (data.status !== undefined) {
-    fields.push(`status = $${paramIndex++}`);
-    values.push(data.status);
-  }
-
-  if (fields.length === 0) {
-    throw new Error("No fields to update");
-  }
-
-  values.push(id);
-  const result = await queryOne<Reservation>(
-    `
-    UPDATE reservations 
-    SET ${fields.join(", ")}, updated_at = CURRENT_TIMESTAMP
-    WHERE id = $${paramIndex}
-    RETURNING *
-  `,
-    values
-  );
-
-  if (!result) {
-    throw new Error("Reservation not found");
-  }
-
-  // Create activity log for the update
-  try {
+    // Calculate field changes before transaction for activity logging
     const fieldChanges = calculateFieldChanges(currentReservation, data);
     
     // Filter out status changes from "active" to "completed" 
@@ -563,43 +625,111 @@ export async function updateReservation(
         delete filteredChanges.duration_hours;
       }
     }
-    
-    // Only create activity log if there are actual changes after filtering
-    if (Object.keys(filteredChanges).length > 0) {
-      const activityLog = await createActivityLog({
-        reservation_id: id,
-        action_type: data.status === 'cancelled' ? 'cancelled' : 'updated',
-        field_changes: filteredChanges,
-        reservation_snapshot: {
-          id: result.id,
-          table_id: result.table_id,
-          guest_name: result.guest_name,
-          guest_phone: result.guest_phone,
-          party_size: result.party_size,
-          reservation_date: typeof result.reservation_date === 'string' 
-            ? result.reservation_date 
-            : result.reservation_date.toISOString().split('T')[0],
-          reservation_time: result.reservation_time,
-          duration_hours: result.duration_hours,
-          notes: result.notes,
-          status: result.status,
-          created_by: result.created_by
-        }
-      });
-      
-      // activityLog will be null for system actions, which is expected
-      if (activityLog) {
-        console.log(`Activity log created for reservation ${id}`);
-      }
-    } else {
-      console.log(`No activity log created for reservation ${id} - only completion status change`);
-    }
-  } catch (activityLogError) {
-    // Log the error but don't fail the reservation update
-    console.error('Failed to create activity log:', activityLogError);
-  }
 
-  return result;
+    // 🔒 ATOMIC TRANSACTION: Update reservation and create activity log together
+    return await transaction(async (client) => {
+      logger.debug({ reservation_id: id, changes: Object.keys(filteredChanges) }, 'Starting atomic reservation update');
+      
+      // Build update query
+      const fields = [];
+      const values = [];
+      let paramIndex = 1;
+
+      if (data.table_id !== undefined) {
+        fields.push(`table_id = $${paramIndex++}`);
+        values.push(data.table_id);
+      }
+      if (data.guest_name !== undefined) {
+        fields.push(`guest_name = $${paramIndex++}`);
+        values.push(data.guest_name);
+      }
+      if (data.guest_phone !== undefined) {
+        fields.push(`guest_phone = $${paramIndex++}`);
+        values.push(data.guest_phone);
+      }
+      if (data.party_size !== undefined) {
+        fields.push(`party_size = $${paramIndex++}`);
+        values.push(data.party_size);
+      }
+      if (data.reservation_date !== undefined) {
+        fields.push(`reservation_date = $${paramIndex++}`);
+        values.push(normalizeDateForDb(data.reservation_date));
+      }
+      if (data.reservation_time !== undefined) {
+        fields.push(`reservation_time = $${paramIndex++}`);
+        values.push(data.reservation_time);
+      }
+      if (data.duration_hours !== undefined) {
+        fields.push(`duration_hours = $${paramIndex++}`);
+        values.push(data.duration_hours);
+      }
+      if (data.notes !== undefined) {
+        fields.push(`notes = $${paramIndex++}`);
+        values.push(data.notes);
+      }
+      if (data.status !== undefined) {
+        fields.push(`status = $${paramIndex++}`);
+        values.push(data.status);
+      }
+
+      if (fields.length === 0) {
+        throw new Error("No fields to update");
+      }
+
+      // Step 1: Update the reservation
+      values.push(id);
+      const updateResult = await client.query(
+        `
+        UPDATE reservations 
+        SET ${fields.join(", ")}, updated_at = CURRENT_TIMESTAMP
+        WHERE id = $${paramIndex}
+        RETURNING *
+      `,
+        values
+      );
+
+      if (!updateResult.rows || updateResult.rows.length === 0) {
+        throw new Error("Reservation not found");
+      }
+
+      const result = updateResult.rows[0] as Reservation;
+      logger.debug({ reservation_id: id }, 'Reservation updated successfully');
+
+      // Step 2: Create activity log (only if there are actual changes after filtering)
+      if (Object.keys(filteredChanges).length > 0) {
+        const activityLog = await createActivityLogWithClient(client, {
+          reservation_id: id,
+          action_type: data.status === 'cancelled' ? 'cancelled' : 'updated',
+          field_changes: filteredChanges,
+          reservation_snapshot: {
+            id: result.id,
+            table_id: result.table_id,
+            guest_name: result.guest_name,
+            guest_phone: result.guest_phone,
+            party_size: result.party_size,
+            reservation_date: typeof result.reservation_date === 'string' 
+              ? result.reservation_date 
+              : result.reservation_date.toISOString().split('T')[0],
+            reservation_time: result.reservation_time,
+            duration_hours: result.duration_hours,
+            notes: result.notes,
+            status: result.status,
+            created_by: result.created_by
+          }
+        });
+        
+        logger.info({ 
+          reservation_id: id, 
+          activity_log_id: activityLog?.id,
+          changes_count: Object.keys(filteredChanges).length
+        }, 'Activity log created successfully');
+      } else {
+        logger.debug({ reservation_id: id }, 'No activity log created - only completion status change');
+      }
+
+      return result;
+    });
+  });
 }
 
 // Helper function to calculate field changes for activity logging
@@ -801,7 +931,7 @@ export async function getReservations(
   }
   if (filters.reservation_date) {
     whereConditions.push(`r.reservation_date = $${paramIndex++}`);
-    values.push(filters.reservation_date);
+    values.push(normalizeDateForDb(filters.reservation_date));
   }
   if (filters.reservation_time) {
     whereConditions.push(`r.reservation_time = $${paramIndex++}`);
@@ -1263,6 +1393,50 @@ export async function createActivityLog(
   }
   
   return createdLog;
+}
+
+// Transaction-aware version of createActivityLog for use within database transactions
+export async function createActivityLogWithClient(
+  client: PoolClient,
+  data: CreateActivityLogInput
+): Promise<ReservationActivityLog | null> {
+  const result = await client.query(
+    `
+    SELECT log_reservation_activity(
+      $1, $2, $3, $4, $5, $6, $7
+    ) as id
+  `,
+    [
+      data.reservation_id,
+      data.action_type,
+      data.field_changes ? JSON.stringify(data.field_changes) : null,
+      data.reservation_snapshot ? JSON.stringify(data.reservation_snapshot) : null,
+      data.notes,
+      data.ip_address,
+      data.user_agent,
+    ]
+  );
+
+  if (!result.rows || result.rows.length === 0) {
+    throw new Error("Failed to create activity log");
+  }
+
+  // Get the created log entry using the same client
+  const createdLogResult = await client.query(
+    `
+    SELECT id, reservation_id, action_type, performed_at, field_changes, 
+           reservation_snapshot, notes, ip_address, user_agent
+    FROM reservation_activity_logs 
+    WHERE id = $1
+  `,
+    [result.rows[0].id]
+  );
+  
+  if (!createdLogResult.rows || createdLogResult.rows.length === 0) {
+    throw new Error("Failed to retrieve created activity log");
+  }
+  
+  return createdLogResult.rows[0] as ReservationActivityLog;
 }
 
 

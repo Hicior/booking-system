@@ -6,14 +6,16 @@ const dbLogger = createDbLogger('connection');
 
 // Database configuration using environment variables
 const dbConfig = {
-  host: process.env.DB_HOST || 'localhost',
+  host: process.env.DB_HOST,
   port: parseInt(process.env.DB_PORT || '5432'),
-  database: process.env.DB_NAME || 'booking_system',
-  user: process.env.DB_USER || 'postgres',
-  password: process.env.DB_PASSWORD || 'password',
+  database: process.env.DB_NAME,
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
   max: 10, // Maximum number of clients in the pool
   idleTimeoutMillis: 30000, // Close idle clients after 30 seconds
   connectionTimeoutMillis: 2000, // Return error after 2 seconds if connection could not be established
+  // Set timezone to Poland (handles both CET/CEST automatically)
+  options: '-c timezone=Europe/Warsaw',
 };
 
 // Log database configuration (without sensitive data)
