@@ -1,16 +1,22 @@
 import React, { useState, useEffect, useRef } from "react";
 import { TableComponent, TableLegend } from "./TableComponent";
 import { Card, CardHeader, CardTitle, CardContent, Button } from "./ui";
-import { Table, Reservation, Room } from "@/lib/types";
-import { updateTablePosition, updateTableProperties } from "@/lib/api-client";
+import { Table, Reservation, Room, ReservationWithTableAndRoom } from "@/lib/types";
+import { updateTablePosition, updateTableProperties, getReservationsWithCrossDay } from "@/lib/api-client";
+import { extractDateString } from "@/lib/date-utils";
 
 interface FloorPlanProps {
   rooms: Room[];
   allTables: Table[];
-  reservations: Reservation[];
+  reservations: Reservation[]; // Legacy prop for backward compatibility
   selectedDate: string;
   selectedTime: string;
   onTableClick: (table: Table) => void;
+  // New optional props for enhanced cross-day support
+  sameDayReservations?: ReservationWithTableAndRoom[];
+  previousDayReservations?: ReservationWithTableAndRoom[];
+  useInternalReservationLoading?: boolean; // When true, FloorPlan will load its own reservations
+  showCompleted?: boolean; // Controls whether completed reservations are visible
 }
 
 interface DragState {
@@ -29,12 +35,21 @@ export function FloorPlan({
   selectedDate,
   selectedTime,
   onTableClick,
+  sameDayReservations,
+  previousDayReservations,
+  useInternalReservationLoading = false,
+  showCompleted = false,
 }: FloorPlanProps) {
   const [tableAvailability, setTableAvailability] = useState<
     Record<string, boolean>
   >({});
   const [loading, setLoading] = useState(false);
   const [isEditMode, setIsEditMode] = useState(false);
+  
+  // State for internal reservation management
+  const [internalSameDayReservations, setInternalSameDayReservations] = useState<ReservationWithTableAndRoom[]>([]);
+  const [internalPreviousDayReservations, setInternalPreviousDayReservations] = useState<ReservationWithTableAndRoom[]>([]);
+  const [reservationLoadingError, setReservationLoadingError] = useState<string>("");
   const [dragState, setDragState] = useState<DragState>({
     isDragging: false,
     tableId: null,
@@ -66,6 +81,94 @@ export function FloorPlan({
   });
   const containerRef = useRef<HTMLDivElement>(null);
 
+  // Load cross-day reservations when using internal loading
+  useEffect(() => {
+    if (!useInternalReservationLoading || !selectedDate) return;
+
+    // Use AbortController for cleanup
+    const abortController = new AbortController();
+    let isMounted = true;
+
+    const loadCrossDayReservations = async () => {
+      setLoading(true);
+      setReservationLoadingError("");
+      
+      try {
+        const result = await getReservationsWithCrossDay(selectedDate, showCompleted ? 'all' : 'active');
+
+        // Only update state if component is still mounted
+        if (isMounted && !abortController.signal.aborted) {
+          setInternalSameDayReservations(result.sameDay);
+          setInternalPreviousDayReservations(result.previousDay);
+        }
+      } catch (error) {
+        // Only handle error if not aborted and component is mounted
+        if (!abortController.signal.aborted && isMounted) {
+          console.error('Error loading cross-day reservations:', error);
+          setReservationLoadingError('Nie udało się załadować rezerwacji');
+        }
+      } finally {
+        if (isMounted && !abortController.signal.aborted) {
+          setLoading(false);
+        }
+      }
+    };
+
+    loadCrossDayReservations();
+
+    // Listen for reservation creation/updates to refresh immediately
+    const refreshHandler = (e: Event) => {
+      // If the update pertains to a different date, still refresh if selectedTime exists, because
+      // cross-day reservations may spill over. Safe to reload unconditionally on this signal.
+      if (!abortController.signal.aborted) {
+        loadCrossDayReservations();
+      }
+    };
+    if (typeof window !== 'undefined') {
+      window.addEventListener('reservation-created', refreshHandler as EventListener);
+      window.addEventListener('reservation-updated', refreshHandler as EventListener);
+      window.addEventListener('reservation-deleted', refreshHandler as EventListener);
+    }
+
+    return () => {
+      isMounted = false;
+      abortController.abort();
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('reservation-created', refreshHandler as EventListener);
+        window.removeEventListener('reservation-updated', refreshHandler as EventListener);
+        window.removeEventListener('reservation-deleted', refreshHandler as EventListener);
+      }
+    };
+  }, [useInternalReservationLoading, selectedDate, showCompleted]);
+
+  // Helper functions to get the correct reservations to use
+  const getEffectiveSameDayReservations = (): ReservationWithTableAndRoom[] => {
+    if (useInternalReservationLoading) {
+      return internalSameDayReservations;
+    }
+    return sameDayReservations || [];
+  };
+
+  const getEffectivePreviousDayReservations = (): ReservationWithTableAndRoom[] => {
+    if (useInternalReservationLoading) {
+      return internalPreviousDayReservations;
+    }
+    return previousDayReservations || [];
+  };
+
+  const getAllEffectiveReservations = (): ReservationWithTableAndRoom[] => {
+    const sameDay = getEffectiveSameDayReservations();
+    const previousDay = getEffectivePreviousDayReservations();
+    const combined = [...sameDay, ...previousDay];
+    if (showCompleted) return combined;
+    return combined.filter(r => r.status === "active");
+  };
+
+  // Helper function to check if a reservation is from the previous day
+  const isFromPreviousDay = (reservation: ReservationWithTableAndRoom): boolean => {
+    return getEffectivePreviousDayReservations().some(r => r.id === reservation.id);
+  };
+
   // Check availability for all tables
   useEffect(() => {
     const checkAvailability = () => {
@@ -74,6 +177,11 @@ export function FloorPlan({
       setLoading(true);
       const availability: Record<string, boolean> = {};
 
+      // Get effective reservations (cross-day aware)
+      const effectiveReservations = useInternalReservationLoading ? 
+        getAllEffectiveReservations() : 
+        (showCompleted ? reservations : reservations.filter((r) => r.status === "active"));
+
       for (const table of allTables) {
         // If no specific time is selected (selectedTime is empty), show all tables as available
         if (!selectedTime) {
@@ -81,42 +189,48 @@ export function FloorPlan({
           continue;
         }
 
-        // Get reservations for this table (include both active and completed when available)
-        const tableReservations = reservations.filter(
-          (r) => r.table_id === table.id && (r.status === "active" || r.status === "completed")
+        // Get reservations for this table
+        const tableReservations = effectiveReservations.filter(
+          (r) => r.table_id === table.id && (showCompleted ? (r.status === "active" || r.status === "completed") : r.status === "active")
         );
 
         // Check if selected time falls within any reservation's time range
         const hasActiveReservation = tableReservations.some((r) => {
-          // Indefinite reservations (-1) block from their start time onwards
+          // Create proper date objects for the reservation
+          const reservationDate = extractDateString(r.reservation_date);
+
+          // Handle indefinite reservations (-1)
           if (Number(r.duration_hours) === -1) {
-            const resStartTime = new Date(`1970-01-01 ${r.reservation_time}`);
-            const selectedDateTime = new Date(`1970-01-01 ${selectedTime}`);
+            const [resHours, resMinutes] = r.reservation_time.split(':').map(Number);
+            const resStartTime = new Date(reservationDate + 'T00:00:00');
+            resStartTime.setHours(resHours, resMinutes, 0, 0);
             
-            // Block if selected time is at or after the indefinite reservation start time
-            return selectedDateTime >= resStartTime;
+            const [selHours, selMinutes] = selectedTime.split(':').map(Number);
+            const selectedDateTime = new Date(selectedDate + 'T00:00:00');
+            selectedDateTime.setHours(selHours, selMinutes, 0, 0);
+            
+            // For indefinite reservations, block until 6 AM next day maximum
+            const maxBlockTime = new Date(resStartTime);
+            maxBlockTime.setDate(maxBlockTime.getDate() + 1);
+            maxBlockTime.setHours(6, 0, 0, 0);
+            
+            return selectedDateTime >= resStartTime && selectedDateTime < maxBlockTime;
           }
 
-          const resTime = r.reservation_time;
-          const resStartTime = new Date(`1970-01-01 ${resTime}`);
-          const resEndTime = new Date(`1970-01-01 ${resTime}`);
-          const durationHours = Number(r.duration_hours);
-          resEndTime.setHours(resEndTime.getHours() + durationHours);
+          // Handle regular reservations with specific duration
+          const [resHours, resMinutes] = r.reservation_time.split(':').map(Number);
+          const resStartTime = new Date(reservationDate + 'T00:00:00');
+          resStartTime.setHours(resHours, resMinutes, 0, 0);
+          
+          const resEndTime = new Date(resStartTime);
+          resEndTime.setTime(resEndTime.getTime() + Number(r.duration_hours) * 60 * 60 * 1000);
 
-          let selectedDateTime = new Date(`1970-01-01 ${selectedTime}`);
+          const [selHours, selMinutes] = selectedTime.split(':').map(Number);
+          const selectedDateTime = new Date(selectedDate + 'T00:00:00');
+          selectedDateTime.setHours(selHours, selMinutes, 0, 0);
 
-          // Handle midnight crossover: if selected time appears to be before reservation start time,
-          // but we're dealing with a late-night scenario, add a day to the selected time
-          if (
-            selectedDateTime < resStartTime &&
-            resEndTime.getDate() > resStartTime.getDate()
-          ) {
-            selectedDateTime = new Date(`1970-01-02 ${selectedTime}`);
-          }
-
-          return (
-            selectedDateTime >= resStartTime && selectedDateTime < resEndTime
-          );
+          // Check if selected time falls within the reservation time range
+          return selectedDateTime >= resStartTime && selectedDateTime < resEndTime;
         });
 
         availability[table.id] = !hasActiveReservation;
@@ -127,7 +241,7 @@ export function FloorPlan({
     };
 
     checkAvailability();
-  }, [allTables, selectedDate, selectedTime, reservations]);
+  }, [allTables, selectedDate, selectedTime, reservations, internalSameDayReservations, internalPreviousDayReservations, useInternalReservationLoading]);
 
   // Initialize table positions from room layout
   useEffect(() => {
@@ -432,26 +546,61 @@ export function FloorPlan({
     }));
   };
 
-  // Get reservations for a specific table
+  // Get reservations for a specific table (includes cross-day logic)
   const getTableReservations = (tableId: string) => {
-    return reservations.filter(
+    const effectiveReservations = useInternalReservationLoading ? 
+      getAllEffectiveReservations() : 
+      reservations.filter((r) => r.status === "active" || r.status === "completed");
+      
+    return effectiveReservations.filter(
       (r) => r.table_id === tableId && (r.status === "active" || r.status === "completed")
     );
   };
 
-  // Get today's reservations for a specific table
+  // Get today's reservations for a specific table (includes previous day reservations that extend to today)
   const getTodayTableReservations = (tableId: string) => {
     if (!selectedDate) return [];
 
-    return reservations.filter((r) => {
+    const effectiveReservations = useInternalReservationLoading ? 
+      getAllEffectiveReservations() : 
+      reservations;
+
+    return effectiveReservations.filter((r) => {
       if (r.table_id !== tableId || (r.status !== "active" && r.status !== "completed")) return false;
 
-      // Compare dates safely without timezone issues
-      const reservationDateString = typeof r.reservation_date === 'string' 
-        ? r.reservation_date.split('T')[0]
-        : r.reservation_date.toISOString().split('T')[0];
+      // Include both same-day and previous-day reservations that are active on the selected date
+      const reservationDateString = extractDateString(r.reservation_date);
 
-      return reservationDateString === selectedDate;
+      // Same day reservations - always include
+      if (reservationDateString === selectedDate) {
+        return true;
+      }
+
+      // Previous day reservations - include if they extend into the selected date (regardless of selected time)
+      if (useInternalReservationLoading || previousDayReservations) {
+        const previousDay = new Date(selectedDate);
+        previousDay.setDate(previousDay.getDate() - 1);
+        const previousDayString = extractDateString(previousDay);
+
+        if (reservationDateString === previousDayString) {
+          if (Number(r.duration_hours) === -1) {
+            return true; // Indefinite reservations extend to today (up to 6 AM)
+          }
+
+          // Check if regular reservation crosses midnight into the selected date
+          const [resHours, resMinutes] = r.reservation_time.split(':').map(Number);
+          const resStartTime = new Date(reservationDateString + 'T00:00:00');
+          resStartTime.setHours(resHours, resMinutes, 0, 0);
+
+          const resEndTime = new Date(resStartTime);
+          resEndTime.setTime(resEndTime.getTime() + Number(r.duration_hours) * 60 * 60 * 1000);
+
+          const selectedDateStart = new Date(selectedDate + 'T00:00:00');
+          return resEndTime > selectedDateStart;
+        }
+      }
+
+      return false;
     });
   };
 
@@ -520,51 +669,63 @@ export function FloorPlan({
             <div className="text-sm font-medium text-base-content">
               Rezerwacje ({todayReservations.length}):
             </div>
-            {todayReservations.map((reservation, index) => (
-              <div
-                key={reservation.id}
-                className={`text-sm border-l-2 pl-3 relative ${
-                  reservation.status === "completed" 
-                    ? "border-success bg-success/10" 
-                    : "border-primary"
-                }`}>
-                <div className="font-medium text-base-content">
-                  {reservation.guest_name}
-                </div>
-                {reservation.status === "completed" && (
-                  <div className="absolute -top-1 -right-1 w-4 h-4 bg-success rounded-full flex items-center justify-center">
-                    <svg 
-                      className="w-2.5 h-2.5 text-success-content" 
-                      fill="currentColor" 
-                      viewBox="0 0 20 20"
-                    >
-                      <path 
-                        fillRule="evenodd" 
-                        d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" 
-                        clipRule="evenodd" 
-                      />
-                    </svg>
+            {todayReservations.map((reservation, index) => {
+              const isPreviousDay = isFromPreviousDay(reservation as ReservationWithTableAndRoom);
+              const reservationDateString = extractDateString(reservation.reservation_date);
+              
+              return (
+                <div
+                  key={reservation.id}
+                  className={`text-sm border-l-2 pl-3 relative ${
+                    reservation.status === "completed" 
+                      ? "border-success bg-success/10" 
+                      : isPreviousDay
+                      ? "border-warning bg-warning/10"
+                      : "border-primary"
+                  }`}>
+                  <div className="font-medium text-base-content">
+                    {reservation.guest_name}
+                    {isPreviousDay && (
+                      <span className="ml-2 text-xs px-1.5 py-0.5 bg-warning/20 text-warning-content rounded">
+                        z {reservationDateString}
+                      </span>
+                    )}
                   </div>
-                )}
-                {reservation.guest_phone && (
-                  <div className="text-base-content/70">
-                    📞 {reservation.guest_phone}
-                  </div>
-                )}
-                <div className="text-base-content/70">
-                  🕐 {reservation.reservation_time} -{" "}
-                  {getReservationEndTime(
-                    reservation.reservation_time,
-                    reservation.duration_hours
+                  {reservation.status === "completed" && (
+                    <div className="absolute -top-1 -right-1 w-4 h-4 bg-success rounded-full flex items-center justify-center">
+                      <svg 
+                        className="w-2.5 h-2.5 text-success-content" 
+                        fill="currentColor" 
+                        viewBox="0 0 20 20"
+                      >
+                        <path 
+                          fillRule="evenodd" 
+                          d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" 
+                          clipRule="evenodd" 
+                        />
+                      </svg>
+                    </div>
                   )}
+                  {reservation.guest_phone && (
+                    <div className="text-base-content/70">
+                      📞 {reservation.guest_phone}
+                    </div>
+                  )}
+                  <div className="text-base-content/70">
+                    🕐 {reservation.reservation_time} -{" "}
+                    {getReservationEndTime(
+                      reservation.reservation_time,
+                      reservation.duration_hours
+                    )}
+                  </div>
+                  <div className="text-base-content/70">
+                    👥 {reservation.party_size}{" "}
+                    {reservation.party_size === 1 ? "osoba" : 
+                     reservation.party_size < 5 ? "osoby" : "osób"}
+                  </div>
                 </div>
-                <div className="text-base-content/70">
-                  👥 {reservation.party_size}{" "}
-                  {reservation.party_size === 1 ? "osoba" : 
-                   reservation.party_size < 5 ? "osoby" : "osób"}
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       </div>
@@ -1053,6 +1214,7 @@ export function FloorPlan({
                             onClick={() => handleTableSelection(table)}
                             scale={0.6}
                             showTitle={false}
+
                           />
                         </div>
                       );

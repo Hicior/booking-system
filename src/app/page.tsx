@@ -7,6 +7,7 @@ import { ReservationModal } from '@/components/ReservationModal';
 import { Card, CardHeader, CardTitle, CardContent, Button } from '@/components/ui';
 import { Room, Table, Reservation } from '@/lib/types';
 import { getRooms, getAllTablesWithRooms, getReservations } from '@/lib/api-client';
+import { getTodayInPoland } from '@/lib/date-utils';
 import Link from 'next/link';
 
 export default function Home() {
@@ -32,9 +33,9 @@ export default function Home() {
   // Ref for scrolling to floorplan section
   const floorPlanRef = useRef<HTMLDivElement>(null);
 
-  // Initialize date to today
+  // Initialize date to today using Poland timezone
   useEffect(() => {
-    const today = new Date().toISOString().split('T')[0];
+    const today = getTodayInPoland();
     setSelectedDate(today);
   }, []);
 
@@ -282,6 +283,7 @@ export default function Home() {
                 selectedDate={selectedDate}
                 selectedTime={selectedTime}
                 onTableClick={handleTableClick}
+                useInternalReservationLoading={true}
               />
             </div>
           )}

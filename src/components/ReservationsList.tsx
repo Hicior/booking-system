@@ -8,6 +8,7 @@ import {
   Input,
   Select,
 } from "./ui";
+// Removed inline day quick picker; range controls only
 import { ReservationModal } from "./ReservationModal";
 import { Room, ReservationWithTableAndRoom, Table, Employee } from "@/lib/types";
 import {
@@ -18,6 +19,7 @@ import {
   getEmployees,
   autoCompleteExpiredReservations,
 } from "@/lib/api-client";
+import { getTodayInPoland } from "@/lib/date-utils";
 
 
 interface ReservationsListProps {
@@ -40,6 +42,11 @@ export function ReservationsList({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>("");
   const [employees, setEmployees] = useState<Employee[]>([]);
+
+  // Date range state
+  const [rangeMode, setRangeMode] = useState<"single" | "range">("single");
+  const [rangeStart, setRangeStart] = useState<string>(selectedDate || getTodayInPoland());
+  const [rangeEnd, setRangeEnd] = useState<string>(selectedDate || getTodayInPoland());
 
   // Filter and search state
   const [filters, setFilters] = useState({
@@ -74,9 +81,18 @@ export function ReservationsList({
     loadEmployees();
   }, []);
 
+  // Sync internal range state when parent selectedDate changes
+  useEffect(() => {
+    if (selectedDate) {
+      setRangeMode('single');
+      setRangeStart(selectedDate);
+      setRangeEnd(selectedDate);
+    }
+  }, [selectedDate]);
+
   // Load reservations function
   const loadReservations = async () => {
-    if (!selectedDate) return;
+    if (!selectedDate && rangeMode === "single") return;
 
     setLoading(true);
     try {
@@ -88,43 +104,65 @@ export function ReservationsList({
         // Continue with loading even if auto-completion fails
       }
 
-      // Get reservations based on current status filter
-      let reservationData: ReservationWithTableAndRoom[] = [];
-      
-      if (filters.status === "all") {
-        // Get all statuses
-        const [activeData, completedData, cancelledData] = await Promise.all([
-          getReservations({
-            reservation_date: selectedDate,
-            status: "active",
-          }),
-          getReservations({
-            reservation_date: selectedDate,
-            status: "completed",
-          }),
-          getReservations({
-            reservation_date: selectedDate,
-            status: "cancelled",
-          })
-        ]);
-        reservationData = [...activeData, ...completedData, ...cancelledData];
-      } else {
-        // Get specific status
-        reservationData = await getReservations({
-          reservation_date: selectedDate,
-          status: filters.status as "active" | "completed" | "cancelled",
+      // Helper to sort consistently by date asc, time asc within status groups
+      const sortReservations = (data: ReservationWithTableAndRoom[]) => {
+        const statusOrder = { active: 0, completed: 1, cancelled: 2 } as const;
+        return data.sort((a, b) => {
+          if (a.status !== b.status) {
+            return (
+              statusOrder[a.status as keyof typeof statusOrder] -
+              statusOrder[b.status as keyof typeof statusOrder]
+            );
+          }
+          // Compare by date (YYYY-MM-DD strings)
+          if (a.reservation_date !== b.reservation_date) {
+            return a.reservation_date.toString().localeCompare(b.reservation_date.toString());
+          }
+          // Then by time ascending
+          return a.reservation_time.localeCompare(b.reservation_time);
         });
-      }
-      
-      // Sort by status (active first, then completed, then cancelled) then by time (newest first)
-      const sortedData = reservationData.sort((a, b) => {
-        const statusOrder = { active: 0, completed: 1, cancelled: 2 };
-        if (a.status !== b.status) {
-          return statusOrder[a.status as keyof typeof statusOrder] - statusOrder[b.status as keyof typeof statusOrder];
+      };
+
+      let reservationData: ReservationWithTableAndRoom[] = [];
+
+      if (rangeMode === "single") {
+        // Single day behaviour (backwards compatible)
+        if (filters.status === "all") {
+          const [activeData, completedData, cancelledData] = await Promise.all([
+            getReservations({ reservation_date: selectedDate, status: "active" }),
+            getReservations({ reservation_date: selectedDate, status: "completed" }),
+            getReservations({ reservation_date: selectedDate, status: "cancelled" })
+          ]);
+          reservationData = [...activeData, ...completedData, ...cancelledData];
+        } else {
+          reservationData = await getReservations({
+            reservation_date: selectedDate,
+            status: filters.status as "active" | "completed" | "cancelled",
+          });
         }
-        // Sort by time in descending order (newest/latest first)
-        return b.reservation_time.localeCompare(a.reservation_time);
-      });
+      } else {
+        // Range mode: use server-side date range filtering in a single request
+        if (!rangeStart || !rangeEnd) {
+          setReservations([]);
+          return;
+        }
+
+        // Normalize ordering
+        const start = new Date(rangeStart + "T12:00:00");
+        const end = new Date(rangeEnd + "T12:00:00");
+        const from = start <= end ? rangeStart : rangeEnd;
+        const to = start <= end ? rangeEnd : rangeStart;
+
+        reservationData = await getReservations({
+          reservation_date_from: from,
+          reservation_date_to: to,
+          status: filters.status as "active" | "completed" | "cancelled" | "all",
+          room_id: filters.room_id || undefined,
+          created_by: filters.employee || undefined,
+        } as any);
+      }
+
+      const sortedData = sortReservations(reservationData);
       
       setReservations(sortedData);
     } catch (err) {
@@ -138,7 +176,7 @@ export function ReservationsList({
   // Load reservations effect
   useEffect(() => {
     loadReservations();
-  }, [selectedDate, filters.status]);
+  }, [selectedDate, filters.status, rangeMode, rangeStart, rangeEnd]);
 
   // Apply filters and search
   useEffect(() => {
@@ -381,10 +419,12 @@ export function ReservationsList({
     });
   };
 
-  const today = new Date().toISOString().split("T")[0];
+  const today = getTodayInPoland();
 
   // Check if the selected date is in the past
-  const isSelectedDateInPast = selectedDate ? selectedDate < today : false;
+  const isSelectedDateInPast = (rangeMode === "single")
+    ? (selectedDate ? selectedDate < today : false)
+    : (rangeEnd ? rangeEnd < today : false);
 
   return (
     <div className="space-y-6">
@@ -393,10 +433,25 @@ export function ReservationsList({
           Zarządzanie Rezerwacjami
         </h2>
         <div className="text-sm text-base-content/70">
-          {selectedDate && (
+          {rangeMode === "single" && selectedDate && (
             <span>
               {new Date(selectedDate + 'T12:00:00').toLocaleDateString("pl", {
                 weekday: "long",
+                year: "numeric",
+                month: "long",
+                day: "numeric",
+              })}
+            </span>
+          )}
+          {rangeMode === "range" && rangeStart && rangeEnd && (
+            <span>
+              {new Date(rangeStart + 'T12:00:00').toLocaleDateString("pl", {
+                year: "numeric",
+                month: "long",
+                day: "numeric",
+              })}
+              {" — "}
+              {new Date(rangeEnd + 'T12:00:00').toLocaleDateString("pl", {
                 year: "numeric",
                 month: "long",
                 day: "numeric",
@@ -418,7 +473,14 @@ export function ReservationsList({
             <Input
               type="date"
               value={selectedDate || today}
-              onChange={(e) => onDateChange?.(e.target.value)}
+              onChange={(e) => {
+                const d = e.target.value;
+                // Switch back to single-day mode and sync range
+                setRangeMode('single');
+                setRangeStart(d);
+                setRangeEnd(d);
+                onDateChange?.(d);
+              }}
               label="Data"
               fullWidth
             />
@@ -485,6 +547,67 @@ export function ReservationsList({
 
 
           </div>
+          {/* Advanced date selection (date range only) */}
+          <div className="mt-3">
+            <details className="group">
+              <summary className="cursor-pointer text-sm text-base-content/70 hover:text-base-content flex items-center gap-2" onClick={() => setRangeMode('range')}>
+                📅 Zaawansowane wybieranie dat
+              </summary>
+              <div className="mt-3">
+                <div className="border border-base-300 rounded-[var(--radius-box)] p-3 bg-base-100">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="text-sm font-medium text-base-content">Zakres dat</div>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <Input
+                      type="date"
+                      label="Od"
+                      value={rangeStart}
+                      onChange={(e) => { setRangeMode('range'); setRangeStart(e.target.value); }}
+                      fullWidth
+                    />
+                    <Input
+                      type="date"
+                      label="Do"
+                      value={rangeEnd}
+                      onChange={(e) => { setRangeMode('range'); setRangeEnd(e.target.value); }}
+                      fullWidth
+                    />
+                  </div>
+                  <div className="flex flex-wrap gap-2 mt-3">
+                    <Button size="sm" variant="secondary" onClick={() => {
+                      const t = today;
+                      setRangeStart(t);
+                      setRangeEnd(t);
+                      setRangeMode('range');
+                    }}>Dziś</Button>
+                    <Button size="sm" variant="secondary" onClick={() => {
+                      // Last 7 days up to today
+                      const endDate = new Date(today + 'T12:00:00');
+                      const startDate = new Date(endDate);
+                      startDate.setDate(endDate.getDate() - 6);
+                      const start = `${startDate.getFullYear()}-${(startDate.getMonth()+1).toString().padStart(2,'0')}-${startDate.getDate().toString().padStart(2,'0')}`;
+                      const end = `${endDate.getFullYear()}-${(endDate.getMonth()+1).toString().padStart(2,'0')}-${endDate.getDate().toString().padStart(2,'0')}`;
+                      setRangeStart(start);
+                      setRangeEnd(end);
+                      setRangeMode('range');
+                    }}>7 dni</Button>
+                    <Button size="sm" variant="secondary" onClick={() => {
+                      // Current month from first day to today
+                      const now = new Date(today + 'T12:00:00');
+                      const first = new Date(now.getFullYear(), now.getMonth(), 1);
+                      const start = `${first.getFullYear()}-${(first.getMonth()+1).toString().padStart(2,'0')}-${first.getDate().toString().padStart(2,'0')}`;
+                      const end = `${now.getFullYear()}-${(now.getMonth()+1).toString().padStart(2,'0')}-${now.getDate().toString().padStart(2,'0')}`;
+                      setRangeStart(start);
+                      setRangeEnd(end);
+                      setRangeMode('range');
+                    }}>Miesiąc</Button>
+                    
+                  </div>
+                </div>
+              </div>
+            </details>
+          </div>
         </CardContent>
       </Card>
 
@@ -529,6 +652,7 @@ export function ReservationsList({
                 <thead>
                   <tr className="border-b border-base-300">
                     <th className="text-left py-3 px-2">Utworzono</th>
+                    <th className="text-left py-3 px-2">Data</th>
                     <th className="text-left py-3 px-2">Godzina</th>
                     <th className="text-left py-3 px-2">Pracownik</th>
                     <th className="text-left py-3 px-2">Gość</th>
@@ -550,6 +674,9 @@ export function ReservationsList({
                       )}`}>
                       <td className="py-3 px-2 text-xs text-base-content/70">
                         {formatCreationTime(reservation.created_at)}
+                      </td>
+                      <td className="py-3 px-2 text-xs text-base-content/90">
+                        {new Date(reservation.reservation_date + 'T12:00:00').toLocaleDateString('pl')}
                       </td>
                       <td className="py-3 px-2 font-medium">
                         {formatTimeForDisplay(reservation.reservation_time)}

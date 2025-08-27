@@ -150,6 +150,8 @@ export interface ReservationFilters {
   room_id?: string;
   table_id?: string;
   reservation_date?: Date | string;
+  reservation_date_from?: Date | string;
+  reservation_date_to?: Date | string;
   reservation_time?: string;
   guest_name?: string;
   guest_phone?: string;

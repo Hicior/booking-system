@@ -2,6 +2,7 @@
 
 import React, { useState } from 'react';
 import { Button } from './Button';
+import { extractDateString } from '@/lib/date-utils';
 
 interface DateSelectorProps {
   selectedDate: string;
@@ -13,9 +14,6 @@ export function DateSelector({ selectedDate, onDateChange, label }: DateSelector
   const [showWeekView, setShowWeekView] = useState(true);
 
   // Helper functions
-  const formatDate = (date: Date): string => {
-    return date.toISOString().split('T')[0];
-  };
 
   const parseDate = (dateString: string): Date => {
     return new Date(dateString + 'T12:00:00'); // Add time to avoid timezone issues
@@ -24,13 +22,13 @@ export function DateSelector({ selectedDate, onDateChange, label }: DateSelector
   const addDays = (dateString: string, days: number): string => {
     const date = parseDate(dateString);
     date.setDate(date.getDate() + days);
-    return formatDate(date);
+    return extractDateString(date);
   };
 
   const getWeekDays = (centerDate: string): Array<{ date: string; day: string; dayName: string; isToday: boolean; isSelected: boolean }> => {
     const center = parseDate(centerDate);
     const today = new Date();
-    const todayString = formatDate(today);
+    const todayString = extractDateString(today);
     
     // Get the start of the week (Monday)
     const startOfWeek = new Date(center);
@@ -42,7 +40,7 @@ export function DateSelector({ selectedDate, onDateChange, label }: DateSelector
     for (let i = 0; i < 7; i++) {
       const date = new Date(startOfWeek);
       date.setDate(date.getDate() + i);
-      const dateString = formatDate(date);
+      const dateString = extractDateString(date);
       
       weekDays.push({
         date: dateString,

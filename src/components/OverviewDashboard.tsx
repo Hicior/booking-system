@@ -299,6 +299,8 @@ export function OverviewDashboard({
         selectedDate={selectedDate}
         selectedTime={selectedTime}
         onTableClick={handleTableClick}
+        useInternalReservationLoading={true}
+        showCompleted={showCompleted}
       />
 
       {/* Reservation Modal */}

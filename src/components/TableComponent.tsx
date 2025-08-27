@@ -8,6 +8,7 @@ interface TableComponentProps {
   onClick: (table: Table) => void;
   scale?: number;
   showTitle?: boolean;
+
 }
 
 export function TableComponent({
@@ -100,6 +101,8 @@ export function TableComponent({
           {reservations.length}
         </div>
       )}
+
+
     </div>
   );
 }

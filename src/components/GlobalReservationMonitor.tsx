@@ -3,6 +3,7 @@
 import { useEffect, useRef } from 'react';
 import { useToast } from '@/components/ui/Toast';
 import { getReservations, completeReservation } from '@/lib/api-client';
+import { getTodayInPoland } from '@/lib/date-utils';
 
 // Global state to track notified reservations
 const globalNotifiedReservations = new Set<string>();
@@ -19,7 +20,7 @@ export function GlobalReservationMonitor() {
     const checkReservations = async () => {
       try {
         // Get today's active reservations
-        const today = new Date().toISOString().split('T')[0];
+        const today = getTodayInPoland();
         const reservations = await getReservations({
           reservation_date: today,
           status: 'active'

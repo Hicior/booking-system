@@ -1,6 +1,6 @@
 "use client";
 
-import React, { createContext, useContext, useState, useCallback, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useCallback, ReactNode, useRef, useEffect } from 'react';
 import { Button } from './Button';
 
 export interface Toast {
@@ -28,6 +28,7 @@ const ToastContext = createContext<ToastContextType | undefined>(undefined);
 
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const timeoutsRef = useRef<Map<string, NodeJS.Timeout>>(new Map());
 
   const addToast = useCallback((toast: Omit<Toast, 'id'>) => {
     const id = Math.random().toString(36).substr(2, 9);
@@ -37,9 +38,13 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     
     // Auto-remove after 5 seconds if not persistent
     if (!toast.persistent) {
-      setTimeout(() => {
+      const timeoutId = setTimeout(() => {
         setToasts(prev => prev.filter(t => t.id !== id));
+        timeoutsRef.current.delete(id); // Clean up timeout reference
       }, 5000);
+      
+      // Store timeout for cleanup
+      timeoutsRef.current.set(id, timeoutId);
     }
     
     return id;
@@ -47,10 +52,33 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 
   const removeToast = useCallback((id: string) => {
     setToasts(prev => prev.filter(toast => toast.id !== id));
+    
+    // Clear timeout if it exists
+    const timeoutId = timeoutsRef.current.get(id);
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+      timeoutsRef.current.delete(id);
+    }
   }, []);
 
   const clearAllToasts = useCallback(() => {
     setToasts([]);
+    
+    // Clear all timeouts
+    timeoutsRef.current.forEach((timeoutId) => {
+      clearTimeout(timeoutId);
+    });
+    timeoutsRef.current.clear();
+  }, []);
+
+  // Cleanup all timeouts on unmount
+  useEffect(() => {
+    return () => {
+      timeoutsRef.current.forEach((timeoutId) => {
+        clearTimeout(timeoutId);
+      });
+      timeoutsRef.current.clear();
+    };
   }, []);
 
   return (

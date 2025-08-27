@@ -1,5 +1,6 @@
 import React from 'react';
 import { TimeInput } from './TimeInput';
+import { getTodayInPoland, extractDateString } from '@/lib/date-utils';
 
 interface DatePickerProps {
   selectedDate?: string;
@@ -20,7 +21,7 @@ export function DatePicker({
   label,
   error,
 }: DatePickerProps) {
-  const today = new Date().toISOString().split('T')[0];
+  const today = getTodayInPoland();
 
   return (
     <div className="space-y-4">
@@ -74,7 +75,7 @@ export function QuickDateSelector({ onSelect }: QuickDateSelectorProps) {
     // Dzisiaj
     options.push({
       label: 'Dzisiaj',
-      date: today.toISOString().split('T')[0],
+      date: extractDateString(today),
       dayName: 'dzisiaj'
     });
 
@@ -83,7 +84,7 @@ export function QuickDateSelector({ onSelect }: QuickDateSelectorProps) {
     tomorrow.setDate(tomorrow.getDate() + 1);
     options.push({
       label: 'Jutro',
-      date: tomorrow.toISOString().split('T')[0],
+      date: extractDateString(tomorrow),
       dayName: 'jutro'
     });
 
@@ -96,10 +97,10 @@ export function QuickDateSelector({ onSelect }: QuickDateSelectorProps) {
         month: 'long', 
         day: 'numeric' 
       });
-      
+
       options.push({
         label: `${dayName.charAt(0).toUpperCase() + dayName.slice(1)}, ${formattedDate}`,
-        date: futureDate.toISOString().split('T')[0],
+        date: extractDateString(futureDate),
         dayName: dayName
       });
     }

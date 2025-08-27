@@ -3,15 +3,16 @@
 import React, { useState, useEffect } from 'react';
 import { OverviewDashboard } from '@/components/OverviewDashboard';
 import { Button, Card, CardContent } from '@/components/ui';
+import { getTodayInPoland } from '@/lib/date-utils';
 import Link from 'next/link';
 
 export default function OverviewPage() {
   const [selectedDate, setSelectedDate] = useState<string>('');
   const [loading, setLoading] = useState(true);
 
-  // Initialize with today's date
+  // Initialize with today's date using Poland timezone
   useEffect(() => {
-    const today = new Date().toISOString().split('T')[0];
+    const today = getTodayInPoland();
     setSelectedDate(today);
     setLoading(false);
   }, []);

@@ -23,40 +23,13 @@ import { query, queryOne, transaction } from "./database";
 import type { PoolClient } from "pg";
 import { createServiceLogger, timeOperation, logError } from "./logger";
 import { normalizeTimeFormat } from "./api-client";
-
-// Date utility functions for consistent timezone handling
-function normalizeDateForDb(date: Date | string): string {
-  // Ensure date is stored as YYYY-MM-DD format without timezone conversion
-  if (typeof date === 'string') {
-    // If it's already a string, ensure it's in the correct format
-    return date.split('T')[0]; // Remove time part if present
-  }
-  
-  if (date instanceof Date) {
-    // Format date as YYYY-MM-DD using local date components
-    // This avoids timezone conversion issues
-    const year = date.getFullYear();
-    const month = (date.getMonth() + 1).toString().padStart(2, '0');
-    const day = date.getDate().toString().padStart(2, '0');
-    return `${year}-${month}-${day}`;
-  }
-  
-  throw new Error('Invalid date format');
-}
-
-function formatDateForDisplay(date: Date | string): string {
-  // Format date for display in Polish format (DD.MM.YYYY)
-  if (typeof date === 'string') {
-    const parsedDate = new Date(date + 'T12:00:00'); // Add noon time to avoid timezone issues
-    return parsedDate.toLocaleDateString('pl-PL');
-  }
-  
-  if (date instanceof Date) {
-    return date.toLocaleDateString('pl-PL');
-  }
-  
-  return '';
-}
+// Import client-safe date utilities
+import { 
+  normalizeDateForDb, 
+  extractDateString, 
+  formatDateForDisplay, 
+  createDateObject 
+} from "./date-utils";
 
 // Employee Services
 export async function getEmployees(): Promise<Employee[]> {
@@ -421,9 +394,9 @@ export async function getAllTablesWithRooms(): Promise<Table[]> {
 // Enhanced reservation creation with race condition protection
 export async function createReservation(
   data: CreateReservationInput,
-  options: { maxRetries?: number; skipFinalAvailabilityCheck?: boolean } = {}
+  options: { maxRetries?: number } = {}
 ): Promise<Reservation> {
-  const { maxRetries = 3, skipFinalAvailabilityCheck = false } = options;
+  const { maxRetries = 3 } = options;
   const logger = createServiceLogger('reservation', 'create');
   
   return timeOperation(logger, 'create_reservation_with_race_protection', async () => {
@@ -444,48 +417,40 @@ export async function createReservation(
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
-        // Final availability check right before insertion (unless explicitly skipped)
-        if (!skipFinalAvailabilityCheck) {
-          const isStillAvailable = await checkTableAvailability(
-            data.table_id,
-            normalizedDate,
-            data.reservation_time,
-            data.duration_hours || 2
+        // Note: We rely on database constraint to handle conflicts atomically
+        // Redundant availability checks have been removed to eliminate race conditions
+        // The database trigger 'prevent_reservation_overlap' ensures data integrity
+
+        // Use database transaction for atomic reservation creation
+        const result = await transaction(async (client: PoolClient) => {
+          // Insert the reservation - database constraint will prevent conflicts
+          const reservation = await client.query(
+            `
+            INSERT INTO reservations (
+              table_id, guest_name, guest_phone, party_size, 
+              reservation_date, reservation_time, duration_hours, notes, created_by
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            RETURNING *
+          `,
+            [
+              data.table_id,
+              data.guest_name,
+              data.guest_phone,
+              data.party_size,
+              normalizedDate,
+              data.reservation_time,
+              data.duration_hours || 2,
+              data.notes,
+              data.created_by,
+            ]
           );
 
-          if (!isStillAvailable) {
-            logger.warn({
-              table_id: data.table_id,
-              date: normalizedDate,
-              time: data.reservation_time,
-              attempt
-            }, 'Table became unavailable before insertion - race condition detected');
-            
-            throw new Error("RACE_CONDITION_DETECTED");
+          if (!reservation.rows[0]) {
+            throw new Error("Failed to create reservation");
           }
-        }
 
-        // Attempt to create the reservation
-        const result = await queryOne<Reservation>(
-          `
-          INSERT INTO reservations (
-            table_id, guest_name, guest_phone, party_size, 
-            reservation_date, reservation_time, duration_hours, notes, created_by
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-          RETURNING *
-        `,
-          [
-            data.table_id,
-            data.guest_name,
-            data.guest_phone,
-            data.party_size,
-            normalizedDate,
-            data.reservation_time,
-            data.duration_hours || 2,
-            data.notes,
-            data.created_by,
-          ]
-        );
+          return reservation.rows[0] as Reservation;
+        });
 
         if (!result) {
           throw new Error("Failed to create reservation");
@@ -578,10 +543,8 @@ export async function updateReservation(
         const now = new Date();
         const [startHours, startMinutes] = currentReservation.reservation_time.split(':').map(Number);
         
-        // Parse reservation date safely - handle both string and Date inputs
-        const resDateString = typeof currentReservation.reservation_date === 'string' 
-          ? currentReservation.reservation_date 
-          : currentReservation.reservation_date.toISOString().split('T')[0];
+        // Parse reservation date safely using standardized utility
+        const resDateString = extractDateString(currentReservation.reservation_date);
         
         // Create start time using the reservation date
         const startTime = new Date(resDateString + 'T00:00:00');
@@ -707,9 +670,7 @@ export async function updateReservation(
             guest_name: result.guest_name,
             guest_phone: result.guest_phone,
             party_size: result.party_size,
-            reservation_date: typeof result.reservation_date === 'string' 
-              ? result.reservation_date 
-              : result.reservation_date.toISOString().split('T')[0],
+            reservation_date: extractDateString(result.reservation_date),
             reservation_time: result.reservation_time,
             duration_hours: result.duration_hours,
             notes: result.notes,
@@ -739,13 +700,7 @@ function calculateFieldChanges(
 ): Record<string, { old: any; new: any }> {
   const changes: Record<string, { old: any; new: any }> = {};
   
-  // Helper function to format date consistently
-  const formatDate = (date: Date | string): string => {
-    if (typeof date === 'string') {
-      return date.split('T')[0]; // Handle both YYYY-MM-DD and YYYY-MM-DDTHH:mm:ss formats
-    }
-    return date.toISOString().split('T')[0];
-  };
+  // Use standardized date utility function
 
   // Helper function to normalize duration_hours for comparison
   const normalizeDuration = (duration: number): number => {
@@ -789,10 +744,8 @@ function calculateFieldChanges(
   }
 
   if (updateData.reservation_date !== undefined) {
-    const newDate = typeof updateData.reservation_date === 'string' 
-      ? updateData.reservation_date.split('T')[0]
-      : updateData.reservation_date.toISOString().split('T')[0];
-    const currentDate = formatDate(currentReservation.reservation_date);
+    const newDate = extractDateString(updateData.reservation_date);
+    const currentDate = extractDateString(currentReservation.reservation_date);
     
     if (newDate !== currentDate) {
       changes.reservation_date = {
@@ -866,16 +819,6 @@ export async function getReservationById(
 
   if (!row) return null;
 
-  // Helper function to format date safely without timezone issues
-  const formatDateSafely = (date: Date): string => {
-    if (!date) return '';
-    // Extract year, month, day directly from the Date object to avoid timezone conversion
-    const year = date.getFullYear();
-    const month = (date.getMonth() + 1).toString().padStart(2, '0');
-    const day = date.getDate().toString().padStart(2, '0');
-    return `${year}-${month}-${day}`;
-  };
-
   // Map flat SQL result to nested object structure
   return {
     id: row.id,
@@ -883,7 +826,7 @@ export async function getReservationById(
     guest_name: row.guest_name,
     guest_phone: row.guest_phone,
     party_size: row.party_size,
-    reservation_date: formatDateSafely(row.reservation_date),
+    reservation_date: extractDateString(row.reservation_date),
     reservation_time: row.reservation_time,
     duration_hours: row.duration_hours,
     notes: row.notes,
@@ -933,6 +876,14 @@ export async function getReservations(
     whereConditions.push(`r.reservation_date = $${paramIndex++}`);
     values.push(normalizeDateForDb(filters.reservation_date));
   }
+  if (filters.reservation_date_from) {
+    whereConditions.push(`r.reservation_date >= $${paramIndex++}`);
+    values.push(normalizeDateForDb(filters.reservation_date_from));
+  }
+  if (filters.reservation_date_to) {
+    whereConditions.push(`r.reservation_date <= $${paramIndex++}`);
+    values.push(normalizeDateForDb(filters.reservation_date_to));
+  }
   if (filters.reservation_time) {
     whereConditions.push(`r.reservation_time = $${paramIndex++}`);
     values.push(filters.reservation_time);
@@ -979,19 +930,27 @@ export async function getReservations(
     JOIN tables t ON r.table_id = t.id
     JOIN rooms rm ON t.room_id = rm.id
     WHERE ${whereConditions.join(" AND ")}
-    ORDER BY r.reservation_date DESC, r.reservation_time ASC, rm.name, t.table_number
+    ORDER BY r.reservation_date ASC, r.reservation_time ASC, rm.name, t.table_number
   `,
     values
   );
 
   // Helper function to format date safely without timezone issues
-  const formatDateSafely = (date: Date): string => {
+  const formatDateSafely = (date: Date | string): string => {
     if (!date) return '';
-    // Extract year, month, day directly from the Date object to avoid timezone conversion
-    const year = date.getFullYear();
-    const month = (date.getMonth() + 1).toString().padStart(2, '0');
-    const day = date.getDate().toString().padStart(2, '0');
-    return `${year}-${month}-${day}`;
+    try {
+      if (typeof date === 'string') {
+        // If it's already a string, extract just the date part
+        return date.split('T')[0];
+      }
+      // For Date objects, use local date components to avoid timezone issues
+      const year = date.getFullYear();
+      const month = (date.getMonth() + 1).toString().padStart(2, '0');
+      const day = date.getDate().toString().padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    } catch {
+      return '';
+    }
   };
 
   // Map flat SQL results to nested object structure
@@ -1001,7 +960,7 @@ export async function getReservations(
     guest_name: row.guest_name,
     guest_phone: row.guest_phone,
     party_size: row.party_size,
-    reservation_date: formatDateSafely(row.reservation_date),
+    reservation_date: extractDateString(row.reservation_date),
     reservation_time: row.reservation_time,
     duration_hours: row.duration_hours,
     notes: row.notes,
@@ -1033,23 +992,35 @@ export async function getReservations(
 }
 
 export async function deleteReservation(id: string): Promise<boolean> {
-  // Get the current reservation for activity logging
-  const currentReservation = await getReservationById(id);
-  if (!currentReservation) {
-    return false;
-  }
+  const logger = createServiceLogger('reservation', 'delete');
+  
+  return timeOperation(logger, 'delete_reservation_with_activity_log', async () => {
+    // Get the current reservation for activity logging (outside transaction for validation)
+    const currentReservation = await getReservationById(id);
+    if (!currentReservation) {
+      logger.warn({ reservation_id: id }, 'Reservation not found for deletion');
+      return false;
+    }
 
-  const result = await query(
-    "UPDATE reservations SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP WHERE id = $1 RETURNING id",
-    [id]
-  );
-  
-  const success = result.length > 0;
-  
-  // Create activity log for the cancellation
-  if (success) {
-    try {
-      const activityLog = await createActivityLog({
+    // 🔒 ATOMIC TRANSACTION: Update reservation status and create activity log together
+    return await transaction(async (client) => {
+      logger.debug({ reservation_id: id }, 'Starting atomic reservation deletion');
+      
+      // Step 1: Update reservation status to cancelled
+      const result = await client.query(
+        "UPDATE reservations SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP WHERE id = $1 RETURNING id",
+        [id]
+      );
+      
+      const success = result.rows.length > 0;
+      
+      if (!success) {
+        logger.warn({ reservation_id: id }, 'Reservation not found or already deleted');
+        return false;
+      }
+      
+      // Step 2: Create activity log for the cancellation
+      const activityLog = await createActivityLogWithClient(client, {
         reservation_id: id,
         action_type: 'cancelled',
         field_changes: {
@@ -1064,9 +1035,7 @@ export async function deleteReservation(id: string): Promise<boolean> {
           guest_name: currentReservation.guest_name,
           guest_phone: currentReservation.guest_phone,
           party_size: currentReservation.party_size,
-          reservation_date: typeof currentReservation.reservation_date === 'string' 
-            ? currentReservation.reservation_date 
-            : currentReservation.reservation_date.toISOString().split('T')[0],
+          reservation_date: extractDateString(currentReservation.reservation_date),
           reservation_time: currentReservation.reservation_time,
           duration_hours: currentReservation.duration_hours,
           notes: currentReservation.notes,
@@ -1075,20 +1044,18 @@ export async function deleteReservation(id: string): Promise<boolean> {
         }
       });
       
-      // activityLog will be null for system actions, which is expected
-      if (activityLog) {
-        console.log(`Activity log created for cancelled reservation ${id}`);
-      }
-    } catch (activityLogError) {
-      // Log the error but don't fail the reservation cancellation
-      console.error('Failed to create activity log for cancellation:', activityLogError);
-    }
-  }
-  
-  return success;
+      logger.info({ 
+        reservation_id: id, 
+        activity_log_id: activityLog?.id,
+        guest_name: currentReservation.guest_name
+      }, 'Reservation cancelled and activity log created successfully');
+      
+      return true;
+    });
+  });
 }
 
-// Table Availability Services
+// Table Availability Services - Uses same proven logic as FloorPlan component
 export async function checkTableAvailability(
   tableId: string,
   date: string,
@@ -1096,121 +1063,58 @@ export async function checkTableAvailability(
   durationHours: number = 2,
   excludeReservationId?: string
 ): Promise<boolean> {
-  // For indefinite duration (-1), check conflicts with existing reservations
-  if (durationHours === -1) {
-    let whereCondition = `
-      table_id = $1 
-      AND reservation_date = $2 
-      AND status = 'active'
-      AND (
-        -- Conflict with other indefinite reservations
-        duration_hours = -1
-        OR
-        -- Conflict with finite reservations that end after our start time (with midnight crossover handling)
-        (
-          duration_hours > 0
-          AND (
-            -- Case 1: Existing reservation doesn't cross midnight
-            CASE 
-              WHEN (reservation_time + (duration_hours || ' hours')::interval)::time >= reservation_time
-              THEN (reservation_time + (duration_hours || ' hours')::interval)::time > $3::time
-              -- Case 2: Existing reservation crosses midnight - always conflicts with indefinite
-              ELSE true
-            END
-          )
-        )
-      )
-    `;
-
-    const values = [tableId, date, time];
-
-    if (excludeReservationId) {
-      whereCondition += ` AND id != $4`;
-      values.push(excludeReservationId);
-    }
-
-    const conflicts = await query(
-      `SELECT id FROM reservations WHERE ${whereCondition}`,
-      values
-    );
-
-    return conflicts.length === 0;
-  }
-
-  // Regular duration checking with special handling for existing indefinite reservations
-  let whereCondition = `
-    table_id = $1 
-    AND reservation_date = $2 
-    AND status = 'active'
-    AND (
-      -- Indefinite reservations conflict if they start at/before new reservation start OR during new reservation duration
-      (duration_hours = -1 AND (
-        -- New reservation starts at or after indefinite start time
-        $3::time >= reservation_time
-        OR
-        -- Indefinite starts during our reservation time (with midnight crossover handling)
-        CASE 
-          WHEN ($3::time + ($4 || ' hours')::interval)::time >= $3::time
-          THEN reservation_time > $3::time AND reservation_time < ($3::time + ($4 || ' hours')::interval)::time
-          -- New reservation crosses midnight
-          ELSE reservation_time > $3::time OR reservation_time < ($3::time + ($4 || ' hours')::interval)::time
-        END
-      ))
-      OR
-      -- Regular time overlap check for finite durations with midnight crossover handling
-      (
-        duration_hours > 0
-        AND (
-          -- Comprehensive midnight crossover handling
-          CASE 
-            -- Case 1: Neither reservation crosses midnight
-            WHEN (reservation_time + (duration_hours || ' hours')::interval)::time >= reservation_time
-                 AND ($3::time + ($4 || ' hours')::interval)::time >= $3::time
-            THEN (
-              $3::time < (reservation_time + (duration_hours || ' hours')::interval)::time
-              AND ($3::time + ($4 || ' hours')::interval)::time > reservation_time
-            )
-            -- Case 2: Existing reservation crosses midnight, new doesn't
-            WHEN (reservation_time + (duration_hours || ' hours')::interval)::time < reservation_time
-                 AND ($3::time + ($4 || ' hours')::interval)::time >= $3::time
-            THEN (
-              $3::time >= reservation_time
-              OR ($3::time + ($4 || ' hours')::interval)::time > reservation_time
-              OR ($3::time + ($4 || ' hours')::interval)::time <= (reservation_time + (duration_hours || ' hours')::interval)::time
-            )
-            -- Case 3: New reservation crosses midnight, existing doesn't  
-            WHEN (reservation_time + (duration_hours || ' hours')::interval)::time >= reservation_time
-                 AND ($3::time + ($4 || ' hours')::interval)::time < $3::time
-            THEN (
-              ($3::time + ($4 || ' hours')::interval)::time > reservation_time
-              OR $3::time < (reservation_time + (duration_hours || ' hours')::interval)::time
-            )
-            -- Case 4: Both reservations cross midnight
-            ELSE (
-              true -- Always conflict when both cross midnight
-            )
-          END
-        )
-      )
-    )
-  `;
-
-  const values = [tableId, date, time, durationHours];
-
-  if (excludeReservationId) {
-    whereCondition += ` AND id != $5`;
-    values.push(excludeReservationId);
-  }
-
-  const conflicts = await query(
-    `
-    SELECT id FROM reservations 
-    WHERE ${whereCondition}
-  `,
-    values
+  // Get all reservations for this table with cross-day support
+  const result = await getReservationsWithCrossDay(date, 'all');
+  const allReservations = [...result.sameDay, ...result.previousDay];
+  
+  // Filter for this specific table and exclude the reservation being edited
+  const tableReservations = allReservations.filter(
+    (r) => r.table_id === tableId && 
+           (r.status === "active" || r.status === "completed") &&
+           (!excludeReservationId || r.id !== excludeReservationId)
   );
 
-  return conflicts.length === 0;
+  // Proper interval overlap checking for new reservation duration
+  const hasConflict = tableReservations.some((r) => {
+    const reservationDate = extractDateString(r.reservation_date);
+
+    // Calculate new reservation start and end times
+    const [newHours, newMinutes] = time.split(':').map(Number);
+    const newStartTime = new Date(date + 'T00:00:00');
+    newStartTime.setHours(newHours, newMinutes, 0, 0);
+    
+    let newEndTime: Date;
+    if (durationHours === -1) {
+      // Indefinite reservations block until 6 AM next day
+      newEndTime = new Date(newStartTime);
+      newEndTime.setDate(newEndTime.getDate() + 1);
+      newEndTime.setHours(6, 0, 0, 0);
+    } else {
+      newEndTime = new Date(newStartTime.getTime() + durationHours * 60 * 60 * 1000);
+    }
+
+    // Calculate existing reservation start and end times
+    const [resHours, resMinutes] = r.reservation_time.split(':').map(Number);
+    const resStartTime = new Date(reservationDate + 'T00:00:00');
+    resStartTime.setHours(resHours, resMinutes, 0, 0);
+    
+    let resEndTime: Date;
+    if (Number(r.duration_hours) === -1) {
+      // Indefinite reservations block until 6 AM next day
+      resEndTime = new Date(resStartTime);
+      resEndTime.setDate(resEndTime.getDate() + 1);
+      resEndTime.setHours(6, 0, 0, 0);
+    } else {
+      resEndTime = new Date(resStartTime.getTime() + Number(r.duration_hours) * 60 * 60 * 1000);
+    }
+
+    // Check for interval overlap: two intervals overlap if start1 < end2 AND start2 < end1
+    const overlaps = newStartTime < resEndTime && resStartTime < newEndTime;
+    
+    return overlaps;
+  });
+
+  return !hasConflict;
 }
 
 export async function getRoomAvailability(
@@ -1290,13 +1194,21 @@ export async function searchReservations(
   );
 
   // Helper function to format date safely without timezone issues
-  const formatDateSafely = (date: Date): string => {
+  const formatDateSafely = (date: Date | string): string => {
     if (!date) return '';
-    // Extract year, month, day directly from the Date object to avoid timezone conversion
-    const year = date.getFullYear();
-    const month = (date.getMonth() + 1).toString().padStart(2, '0');
-    const day = date.getDate().toString().padStart(2, '0');
-    return `${year}-${month}-${day}`;
+    try {
+      if (typeof date === 'string') {
+        // If it's already a string, extract just the date part
+        return date.split('T')[0];
+      }
+      // For Date objects, use local date components to avoid timezone issues
+      const year = date.getFullYear();
+      const month = (date.getMonth() + 1).toString().padStart(2, '0');
+      const day = date.getDate().toString().padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    } catch {
+      return '';
+    }
   };
 
   // Map flat SQL results to nested object structure
@@ -1306,7 +1218,7 @@ export async function searchReservations(
     guest_name: row.guest_name,
     guest_phone: row.guest_phone,
     party_size: row.party_size,
-    reservation_date: formatDateSafely(row.reservation_date),
+    reservation_date: extractDateString(row.reservation_date),
     reservation_time: row.reservation_time,
     duration_hours: row.duration_hours,
     notes: row.notes,
@@ -1612,6 +1524,206 @@ export async function searchActivityLogs(
   );
 }
 
+/**
+ * Get reservations for a specific date, including active reservations from the previous day
+ * that extend past midnight. This is crucial for proper availability checking and display.
+ */
+export async function getReservationsWithCrossDay(
+  date: string,
+  statusFilter: 'active' | 'completed' | 'cancelled' | 'all' = 'active'
+): Promise<{
+  sameDay: ReservationWithTableAndRoom[];
+  previousDay: ReservationWithTableAndRoom[];
+  all: ReservationWithTableAndRoom[];
+}> {
+  const logger = createServiceLogger('reservations', 'get_reservations_cross_day');
+
+  try {
+    logger.debug({ date, statusFilter }, 'Getting reservations with cross-day logic');
+
+    // Calculate previous day
+    const currentDate = new Date(date + 'T12:00:00');
+    const previousDate = new Date(currentDate);
+    previousDate.setDate(previousDate.getDate() - 1);
+    const previousDateString = previousDate.toISOString().split('T')[0];
+
+    let statusCondition = '';
+    if (statusFilter !== 'all') {
+      statusCondition = `AND r.status = '${statusFilter}'`;
+    }
+
+    const sqlQuery = `
+      SELECT 
+        r.*,
+        t.table_number,
+        t.max_capacity,
+        t.shape,
+        t.position_x,
+        t.position_y,
+        t.size_scale,
+        t.width_ratio,
+        t.height_ratio,
+        t.orientation,
+        t.room_id,
+        rm.name as room_name,
+        rm.description as room_description,
+        rm.is_active as room_is_active
+      FROM reservations r
+      JOIN tables t ON r.table_id = t.id
+      JOIN rooms rm ON t.room_id = rm.id
+      WHERE (
+        -- Same day reservations
+        (r.reservation_date = $1 ${statusCondition})
+        OR
+        -- Previous day reservations that might extend past midnight
+        (r.reservation_date = $2 ${statusCondition} AND (
+          -- Indefinite reservations from previous day
+          r.duration_hours = -1
+          OR
+          -- Regular reservations that cross midnight
+          (r.duration_hours > 0 AND 
+           EXTRACT(HOUR FROM r.reservation_time::time) + r.duration_hours > 24)
+        ))
+      )
+      ORDER BY r.reservation_date DESC, r.reservation_time DESC
+    `;
+
+    const reservations = await query<any>(sqlQuery, [date, previousDateString]);
+
+    const sameDay: ReservationWithTableAndRoom[] = [];
+    const previousDay: ReservationWithTableAndRoom[] = [];
+
+    // Helper function to safely format dates without timezone issues
+    const formatDateSafely = (date: Date | string): string => {
+      if (!date) return '';
+      try {
+        if (typeof date === 'string') {
+          // If it's already a string, extract just the date part
+          return date.split('T')[0];
+        }
+        // For Date objects, use local date components to avoid timezone issues
+        const year = date.getFullYear();
+        const month = (date.getMonth() + 1).toString().padStart(2, '0');
+        const day = date.getDate().toString().padStart(2, '0');
+        return `${year}-${month}-${day}`;
+      } catch {
+        return '';
+      }
+    };
+
+    // Process and categorize reservations
+    for (const row of reservations) {
+      const reservation: ReservationWithTableAndRoom = {
+        id: row.id,
+        table_id: row.table_id,
+        guest_name: row.guest_name,
+        guest_phone: row.guest_phone,
+        party_size: row.party_size,
+        reservation_date: extractDateString(row.reservation_date),
+        reservation_time: row.reservation_time,
+        duration_hours: Number(row.duration_hours),
+        notes: row.notes,
+        status: row.status,
+        created_by: row.created_by,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+        table: {
+          id: row.table_id,
+          room_id: row.room_id,
+          table_number: row.table_number,
+          max_capacity: row.max_capacity,
+          shape: row.shape,
+          position_x: row.position_x,
+          position_y: row.position_y,
+          size_scale: row.size_scale,
+          width_ratio: row.width_ratio,
+          height_ratio: row.height_ratio,
+          orientation: row.orientation,
+          is_active: true,
+          created_at: row.created_at,
+          updated_at: row.updated_at,
+          room: {
+            id: row.room_id,
+            name: row.room_name,
+            description: row.room_description,
+            is_active: row.room_is_active,
+            created_at: row.created_at,
+            updated_at: row.updated_at
+          }
+        }
+      };
+
+      // Categorize by original reservation date
+      if (reservation.reservation_date === date) {
+        sameDay.push(reservation);
+      } else {
+        // Check if previous day reservation is actually still active on the target date
+        const isStillActiveOnTargetDate = isReservationActiveOnDate(reservation, date);
+        if (isStillActiveOnTargetDate) {
+          previousDay.push(reservation);
+        }
+      }
+    }
+
+    const all = [...sameDay, ...previousDay];
+
+    logger.info({
+      date,
+      sameDayCount: sameDay.length,
+      previousDayCount: previousDay.length,
+      totalCount: all.length
+    }, 'Retrieved reservations with cross-day logic');
+
+    return { sameDay, previousDay, all };
+
+  } catch (error) {
+    logError(logger, error as Error, { 
+      context: 'get_reservations_cross_day_failed',
+      date,
+      statusFilter
+    });
+    throw error;
+  }
+}
+
+/**
+ * Check if a reservation is still active on a specific date
+ * (handles cross-midnight scenarios)
+ */
+function isReservationActiveOnDate(reservation: ReservationWithTableAndRoom, targetDate: string): boolean {
+  const resDate = new Date(reservation.reservation_date + 'T00:00:00');
+  const targetDateObj = new Date(targetDate + 'T00:00:00');
+  
+  // Only check reservations from the day before
+  const daysDiff = Math.floor((targetDateObj.getTime() - resDate.getTime()) / (1000 * 60 * 60 * 24));
+  if (daysDiff !== 1) return false;
+
+  // Handle indefinite reservations
+  if (Number(reservation.duration_hours) === -1) {
+    const [hours] = reservation.reservation_time.split(':').map(Number);
+    const resStartTime = new Date(resDate);
+    resStartTime.setHours(hours, 0, 0, 0);
+    
+    // Indefinite reservations block until 6 AM next day maximum
+    const maxBlockTime = new Date(resStartTime);
+    maxBlockTime.setDate(maxBlockTime.getDate() + 1);
+    maxBlockTime.setHours(6, 0, 0, 0);
+    
+    return targetDateObj < maxBlockTime;
+  }
+
+  // Handle regular reservations that cross midnight
+  const [hours, minutes] = reservation.reservation_time.split(':').map(Number);
+  const resStartTime = new Date(resDate);
+  resStartTime.setHours(hours, minutes, 0, 0);
+  
+  const resEndTime = new Date(resStartTime);
+  resEndTime.setTime(resEndTime.getTime() + Number(reservation.duration_hours) * 60 * 60 * 1000);
+  
+  // Check if reservation extends into the target date
+  return resEndTime > targetDateObj;
+}
+
 export async function autoCompleteExpiredReservations(): Promise<number> {
   const logger = createServiceLogger('reservations', 'auto_complete_expired');
   
@@ -1672,9 +1784,7 @@ export async function autoCompleteExpiredReservations(): Promise<number> {
       try {
         // Calculate actual duration for indefinite reservations
         // Parse the reservation date and time to create the start datetime
-        const reservationDateString = typeof reservation.reservation_date === 'string' 
-          ? reservation.reservation_date.split('T')[0] 
-          : reservation.reservation_date.toISOString().split('T')[0];
+        const reservationDateString = extractDateString(reservation.reservation_date);
         
         const [hours, minutes] = reservation.reservation_time.split(':').map(Number);
         const startTime = new Date(reservationDateString + 'T00:00:00');

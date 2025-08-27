@@ -107,6 +107,26 @@ class ApiClient {
     return this.request<ReservationWithTableAndRoom[]>(endpoint);
   }
 
+  async getReservationsWithCrossDay(
+    date: string,
+    statusFilter: 'active' | 'completed' | 'cancelled' | 'all' = 'active'
+  ): Promise<{
+    sameDay: ReservationWithTableAndRoom[];
+    previousDay: ReservationWithTableAndRoom[];
+    all: ReservationWithTableAndRoom[];
+  }> {
+    const params = new URLSearchParams();
+    params.append('date', date);
+    params.append('status_filter', statusFilter);
+    params.append('cross_day', 'true');
+
+    return this.request<{
+      sameDay: ReservationWithTableAndRoom[];
+      previousDay: ReservationWithTableAndRoom[];
+      all: ReservationWithTableAndRoom[];
+    }>(`/reservations?${params.toString()}`);
+  }
+
   async createReservation(data: CreateReservationInput): Promise<Reservation> {
     return this.request<Reservation>("/reservations", {
       method: "POST",
@@ -205,6 +225,10 @@ export const updateTableProperties = (
 
 export const getReservations = (filters?: ReservationFilters) =>
   apiClient.getReservations(filters);
+export const getReservationsWithCrossDay = (
+  date: string,
+  statusFilter: 'active' | 'completed' | 'cancelled' | 'all' = 'active'
+) => apiClient.getReservationsWithCrossDay(date, statusFilter);
 export const createReservation = (data: CreateReservationInput) =>
   apiClient.createReservation(data);
 export const updateReservation = (id: string, data: UpdateReservationInput) =>

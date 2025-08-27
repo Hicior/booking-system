@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { getReservations, createReservation } from '@/lib/services';
+import { getReservations, createReservation, getReservationsWithCrossDay } from '@/lib/services';
 import { CreateReservationInput } from '@/lib/types';
 import { createRequestLogger, timeOperation, logError } from '@/lib/logger';
 
@@ -7,8 +7,53 @@ export async function GET(request: Request) {
   const logger = createRequestLogger(request);
   const { searchParams } = new URL(request.url);
   
+  // Check if this is a cross-day request
+  const crossDay = searchParams.get('cross_day') === 'true';
+  
+  if (crossDay) {
+    const date = searchParams.get('date');
+    const statusFilter = searchParams.get('status_filter') as 'active' | 'completed' | 'cancelled' | 'all';
+    
+    if (!date) {
+      return NextResponse.json(
+        { error: 'Date parameter is required for cross-day requests' },
+        { status: 400 }
+      );
+    }
+    
+    return timeOperation(logger, 'get_reservations_cross_day', async () => {
+      logger.debug({ date, statusFilter }, 'Fetching reservations with cross-day logic');
+
+      const result = await getReservationsWithCrossDay(date, statusFilter || 'active');
+      
+      logger.info({ 
+        date,
+        statusFilter,
+        sameDayCount: result.sameDay.length,
+        previousDayCount: result.previousDay.length,
+        totalCount: result.all.length
+      }, 'Cross-day reservations fetched successfully');
+      
+      return NextResponse.json(result);
+    }).catch((error) => {
+      logError(logger, error, { 
+        context: 'get_reservations_cross_day_failed',
+        date,
+        statusFilter
+      });
+      
+      return NextResponse.json(
+        { error: 'Nie udało się pobrać rezerwacji z logiką cross-day' },
+        { status: 500 }
+      );
+    });
+  }
+  
+  // Regular reservation request
   const filters = {
     reservation_date: searchParams.get('reservation_date') || undefined,
+    reservation_date_from: searchParams.get('reservation_date_from') || undefined,
+    reservation_date_to: searchParams.get('reservation_date_to') || undefined,
     room_id: searchParams.get('room_id') || undefined,
     status: searchParams.get('status') || undefined,
     guest_name: searchParams.get('guest_name') || undefined,

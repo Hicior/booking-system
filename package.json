@@ -10,11 +10,7 @@
     "clean-logs": "node src/scripts/cleanup-activity-logs.js",
     "clear-all-logs": "node src/scripts/clear-all-activity-logs.js",
     "debug-db": "node src/scripts/debug-database.js",
-    "test-atomic-update": "node src/scripts/test-atomic-update.js",
-    "test-race-condition": "node src/scripts/test-race-condition.js",
-    "demo-race-fix": "node src/scripts/demo-race-condition-fix.js",
-    "test-availability": "node src/scripts/test-availability-logic.js",
-    "quick-test-availability": "node src/scripts/quick-availability-test.js"
+    "generate-src-md": "node src/scripts/generate-src-md.js"
   },
   "dependencies": {
     "@types/pg": "^8.15.4",

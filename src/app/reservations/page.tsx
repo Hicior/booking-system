@@ -5,6 +5,7 @@ import { ReservationsList } from '@/components/ReservationsList';
 import { Button } from '@/components/ui';
 import { Room } from '@/lib/types';
 import { getRooms } from '@/lib/api-client';
+import { getTodayInPoland } from '@/lib/date-utils';
 import Link from 'next/link';
 
 export default function ReservationsPage() {
@@ -13,9 +14,9 @@ export default function ReservationsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>('');
 
-  // Initialize with today's date
+  // Initialize with today's date using Poland timezone
   useEffect(() => {
-    const today = new Date().toISOString().split('T')[0];
+    const today = getTodayInPoland();
     setSelectedDate(today);
   }, []);
 

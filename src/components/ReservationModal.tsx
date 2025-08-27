@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { Modal, Button, Input, Textarea, Select } from "./ui";
 import { Table, CreateReservationInput, Reservation, Employee } from "@/lib/types";
 import {
@@ -10,6 +10,9 @@ import {
   checkTableAvailability,
   normalizeTimeFormat,
 } from "@/lib/api-client";
+
+// Import client-safe date utilities
+import { extractDateString, getTodayInPoland } from "@/lib/date-utils";
 
 interface ReservationModalProps {
   isOpen: boolean;
@@ -52,6 +55,9 @@ export function ReservationModal({
   const [isAvailable, setIsAvailable] = useState<boolean | null>(null);
   const [lastCheckedTime, setLastCheckedTime] = useState<string>("");
   const [lastCheckedDuration, setLastCheckedDuration] = useState<number>(0);
+  
+  // Refs for cleanup
+  const recheckTimeout = useRef<NodeJS.Timeout | null>(null);
 
   // Load employees
   useEffect(() => {
@@ -74,24 +80,7 @@ export function ReservationModal({
 
 
 
-  // Helper function to safely convert date to string format without timezone issues
-  const formatDateForInput = (date: Date | string): string => {
-    if (typeof date === 'string') {
-      // If it's already a string, assume it's in YYYY-MM-DD format
-      return date.split('T')[0]; // Handle both YYYY-MM-DD and YYYY-MM-DDTHH:mm:ss formats
-    }
-    
-    // If it's a Date object, format it safely to avoid timezone issues
-    if (date instanceof Date) {
-      const year = date.getFullYear();
-      const month = (date.getMonth() + 1).toString().padStart(2, '0');
-      const day = date.getDate().toString().padStart(2, '0');
-      return `${year}-${month}-${day}`;
-    }
-    
-    // Fallback for any other case
-    return '';
-  };
+  // Use standardized date utility function
 
   // Helper function to calculate end time properly handling midnight crossover
   const calculateEndTime = (startTime: string, durationHours: number): string => {
@@ -114,7 +103,7 @@ export function ReservationModal({
         guest_name: existingReservation.guest_name,
         guest_phone: existingReservation.guest_phone || "",
         party_size: existingReservation.party_size,
-        reservation_date: formatDateForInput(existingReservation.reservation_date),
+        reservation_date: extractDateString(existingReservation.reservation_date),
         reservation_time: normalizeTimeFormat(existingReservation.reservation_time),
         duration_hours: Number(existingReservation.duration_hours), // Ensure it's a number
         notes: existingReservation.notes || "",
@@ -188,6 +177,16 @@ export function ReservationModal({
     return () => clearTimeout(timeoutId);
   }, [table, formData.reservation_time, formData.duration_hours, formData.reservation_date, existingReservation?.id, lastCheckedTime, lastCheckedDuration, errors.availability]);
 
+  // Cleanup effect for recheck timeout
+  useEffect(() => {
+    return () => {
+      if (recheckTimeout.current) {
+        clearTimeout(recheckTimeout.current);
+        recheckTimeout.current = null;
+      }
+    };
+  }, []);
+
   const validateForm = (): boolean => {
     const newErrors: Record<string, string> = {};
 
@@ -210,8 +209,8 @@ export function ReservationModal({
     if (!formData.reservation_date) {
       newErrors.reservation_date = "Data rezerwacji jest wymagana";
     } else {
-      // Compare dates as strings to avoid timezone issues
-      const today = new Date().toISOString().split('T')[0];
+      // Compare dates as strings using Poland timezone
+      const today = getTodayInPoland();
       
       if (formData.reservation_date < today) {
         newErrors.reservation_date = "Data rezerwacji nie może być w przeszłości";
@@ -271,6 +270,15 @@ export function ReservationModal({
         await createReservation(reservationData);
       }
 
+      // Notify listeners (e.g., FloorPlan) to refresh immediately
+      try {
+        if (typeof window !== "undefined") {
+          const eventDetail = { date: formData.reservation_date };
+          window.dispatchEvent(new CustomEvent("reservation-updated", { detail: eventDetail }));
+          window.dispatchEvent(new CustomEvent("reservation-created", { detail: eventDetail }));
+        }
+      } catch {}
+
       onReservationCreated();
       onClose();
     } catch (error) {
@@ -315,8 +323,8 @@ export function ReservationModal({
         setLastCheckedTime("");
         setLastCheckedDuration(0);
         
-        // Trigger immediate availability recheck
-        setTimeout(async () => {
+        // Trigger immediate availability recheck with proper cleanup
+        const recheckTimeoutId = setTimeout(async () => {
           if (table && formData.reservation_time && formData.reservation_date) {
             setCheckingAvailability(true);
             try {
@@ -345,7 +353,12 @@ export function ReservationModal({
               setCheckingAvailability(false);
             }
           }
+          // Clear the ref when timeout completes
+          recheckTimeout.current = null;
         }, 500);
+        
+        // Store timeout ID for cleanup
+        recheckTimeout.current = recheckTimeoutId;
       }
     } finally {
       setLoading(false);
@@ -501,7 +514,7 @@ export function ReservationModal({
               value={formData.reservation_date}
               onChange={(e) => handleInputChange("reservation_date", e.target.value)}
               error={errors.reservation_date}
-              min={new Date().toISOString().split('T')[0]}
+              min={getTodayInPoland()}
               fullWidth
             />
 
