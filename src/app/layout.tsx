@@ -21,6 +21,7 @@ export default function RootLayout({
           href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=swap"
           rel="stylesheet"
         />
+        <link rel="icon" href="/favicon_pub_mentzen.svg" type="image/svg+xml" />
       </head>
       <body className="font-sans antialiased" suppressHydrationWarning={true}>
         <ToastProvider>
