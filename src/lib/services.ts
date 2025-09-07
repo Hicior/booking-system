@@ -212,8 +212,8 @@ export async function deleteEmployee(id: string): Promise<boolean> {
 
   // Check if employee is used in any reservations (active, completed, or cancelled)
   const reservationsCount = await query<{ count: number }>(
-    "SELECT COUNT(*) as count FROM reservations WHERE created_by = $1",
-    [existingEmployee.display_name]
+    "SELECT COUNT(*) as count FROM reservations WHERE employee_id = $1",
+    [id]
   );
 
   if (reservationsCount[0]?.count > 0) {
@@ -408,7 +408,7 @@ export async function createReservation(
       reservation_date: data.reservation_date,
       reservation_time: data.reservation_time,
       duration_hours: data.duration_hours || 2,
-      created_by: data.created_by,
+      employee_id: data.employee_id,
       max_retries: maxRetries
     }, 'Creating new reservation with race condition protection');
 
@@ -428,7 +428,7 @@ export async function createReservation(
             `
             INSERT INTO reservations (
               table_id, guest_name, guest_phone, party_size, 
-              reservation_date, reservation_time, duration_hours, notes, created_by
+              reservation_date, reservation_time, duration_hours, notes, employee_id
             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             RETURNING *
           `,
@@ -441,7 +441,7 @@ export async function createReservation(
               data.reservation_time,
               data.duration_hours || 2,
               data.notes,
-              data.created_by,
+              data.employee_id,
             ]
           );
 
@@ -675,7 +675,7 @@ export async function updateReservation(
             duration_hours: result.duration_hours,
             notes: result.notes,
             status: result.status,
-            created_by: result.created_by
+            employee_id: result.employee_id
           }
         });
         
@@ -831,7 +831,7 @@ export async function getReservationById(
     duration_hours: row.duration_hours,
     notes: row.notes,
     status: row.status,
-    created_by: row.created_by,
+    employee_id: row.employee_id,
     created_at: row.created_at,
     updated_at: row.updated_at,
     table: {
@@ -896,9 +896,9 @@ export async function getReservations(
     whereConditions.push(`r.guest_phone ILIKE $${paramIndex++}`);
     values.push(`%${filters.guest_phone}%`);
   }
-  if (filters.created_by) {
-    whereConditions.push(`r.created_by = $${paramIndex++}`);
-    values.push(filters.created_by);
+  if (filters.employee_id) {
+    whereConditions.push(`r.employee_id = $${paramIndex++}`);
+    values.push(filters.employee_id);
   }
   if (filters.status) {
     if (filters.status === 'all') {
@@ -965,7 +965,7 @@ export async function getReservations(
     duration_hours: row.duration_hours,
     notes: row.notes,
     status: row.status,
-    created_by: row.created_by,
+    employee_id: row.employee_id,
     created_at: row.created_at,
     updated_at: row.updated_at,
     table: {
@@ -1040,7 +1040,7 @@ export async function deleteReservation(id: string): Promise<boolean> {
           duration_hours: currentReservation.duration_hours,
           notes: currentReservation.notes,
           status: 'cancelled', // New status
-          created_by: currentReservation.created_by
+          employee_id: currentReservation.employee_id
         }
       });
       
@@ -1223,7 +1223,7 @@ export async function searchReservations(
     duration_hours: row.duration_hours,
     notes: row.notes,
     status: row.status,
-    created_by: row.created_by,
+    employee_id: row.employee_id,
     created_at: row.created_at,
     updated_at: row.updated_at,
     table: {
@@ -1624,7 +1624,7 @@ export async function getReservationsWithCrossDay(
         duration_hours: Number(row.duration_hours),
         notes: row.notes,
         status: row.status,
-        created_by: row.created_by,
+        employee_id: row.employee_id,
         created_at: row.created_at,
         updated_at: row.updated_at,
         table: {

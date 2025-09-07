@@ -15,11 +15,12 @@ alwaysApply: true
 
 ## Tech stack
 
-- Next.js
-- Tailwind CSS (for styling)
-- PostgreSQL (for database)
-- Auth0 (for authentication) **Do not implement it now. It is not needed.**
+- Next.js 
+- Tailwind CSS
+- PostgreSQL
+- Auth0
 - Pino (for logging)
+- Render (for app and database hosting)
 
 ## .env file content
 

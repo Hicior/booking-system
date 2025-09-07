@@ -58,7 +58,7 @@ export async function GET(request: Request) {
     status: searchParams.get('status') || undefined,
     guest_name: searchParams.get('guest_name') || undefined,
     guest_phone: searchParams.get('guest_phone') || undefined,
-    created_by: searchParams.get('created_by') || undefined,
+    employee_id: searchParams.get('employee_id') || undefined,
   };
 
   // Remove undefined values

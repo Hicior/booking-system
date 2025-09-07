@@ -61,7 +61,7 @@ export interface Reservation {
   duration_hours: number;
   notes?: string;
   status: 'active' | 'cancelled' | 'completed';
-  created_by?: string;
+  employee_id?: string;
   created_at: Date;
   updated_at: Date;
 }
@@ -129,7 +129,7 @@ export interface CreateReservationInput {
   reservation_time: string;
   duration_hours?: number;
   notes?: string;
-  created_by?: string;
+  employee_id?: string;
 }
 
 export interface UpdateReservationInput {
@@ -156,7 +156,7 @@ export interface ReservationFilters {
   guest_name?: string;
   guest_phone?: string;
   status?: 'active' | 'cancelled' | 'completed' | 'all';
-  created_by?: string;
+  employee_id?: string;
 }
 
 export interface TableAvailabilityQuery {

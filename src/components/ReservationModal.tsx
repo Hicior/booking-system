@@ -35,7 +35,7 @@ export function ReservationModal({
 }: ReservationModalProps) {
   // Form state
   const [formData, setFormData] = useState({
-    created_by: "",
+    employee_id: "",
     guest_name: "",
     guest_phone: "",
     party_size: 1,
@@ -99,7 +99,7 @@ export function ReservationModal({
   useEffect(() => {
     if (existingReservation) {
       setFormData({
-        created_by: existingReservation.created_by || "",
+        employee_id: existingReservation.employee_id || "",
         guest_name: existingReservation.guest_name,
         guest_phone: existingReservation.guest_phone || "",
         party_size: existingReservation.party_size,
@@ -110,7 +110,7 @@ export function ReservationModal({
       });
     } else {
       setFormData({
-        created_by: "",
+        employee_id: "",
         guest_name: "",
         guest_phone: "",
         party_size: 1,
@@ -190,8 +190,8 @@ export function ReservationModal({
   const validateForm = (): boolean => {
     const newErrors: Record<string, string> = {};
 
-    if (!formData.created_by.trim()) {
-      newErrors.created_by = "Wybór pracownika jest wymagany";
+    if (!formData.employee_id.trim()) {
+      newErrors.employee_id = "Wybór pracownika jest wymagany";
     }
 
     if (!formData.guest_name.trim()) {
@@ -261,7 +261,7 @@ export function ReservationModal({
         reservation_time: formData.reservation_time,
         duration_hours: formData.duration_hours,
         notes: formData.notes.trim() || undefined,
-        created_by: formData.created_by.trim(),
+        employee_id: formData.employee_id.trim(),
       };
 
       if (existingReservation) {
@@ -408,7 +408,7 @@ export function ReservationModal({
   const employeeOptions = [
     { value: "", label: "Wybierz pracownika..." },
     ...employees.map((employee) => ({
-      value: employee.display_name,
+      value: employee.id,
       label: employee.display_name,
     })),
   ];
@@ -464,10 +464,10 @@ export function ReservationModal({
 
           <Select
             label="Pracownik przyjmujący rezerwację *"
-            value={formData.created_by}
-            onChange={(e) => handleInputChange("created_by", e.target.value)}
+            value={formData.employee_id}
+            onChange={(e) => handleInputChange("employee_id", e.target.value)}
             options={employeeOptions}
-            error={errors.created_by}
+            error={errors.employee_id}
             disabled={loadingEmployees || !!existingReservation}
             fullWidth
           />

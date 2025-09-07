@@ -45,7 +45,7 @@ export default function ConfigurationPage() {
   const checkSingleEmployeeDeletable = async (employee: Employee): Promise<boolean> => {
     try {
       // Check reservations (any status - active, completed, cancelled)
-      const reservationsResponse = await fetch(`/api/reservations?created_by=${encodeURIComponent(employee.display_name)}&status=all`);
+      const reservationsResponse = await fetch(`/api/reservations?employee_id=${encodeURIComponent(employee.id)}&status=all`);
       if (reservationsResponse.ok) {
         const reservations = await reservationsResponse.json();
         if (reservations.length > 0) {

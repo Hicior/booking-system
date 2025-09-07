@@ -61,7 +61,7 @@ CREATE TABLE reservations (
     duration_hours NUMERIC DEFAULT 2.0, -- Default 2 hours, supports decimal hours (e.g., 2.5h)
     notes TEXT,
     status VARCHAR(20) DEFAULT 'active', -- active, cancelled, completed
-    created_by VARCHAR(100), -- Employee who made the reservation
+    employee_id UUID REFERENCES employees(id) ON DELETE SET NULL, -- Employee who made the reservation
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     
@@ -89,6 +89,7 @@ CREATE INDEX idx_reservations_date ON reservations(reservation_date);
 CREATE INDEX idx_reservations_table_date ON reservations(table_id, reservation_date);
 CREATE INDEX idx_reservations_guest_name ON reservations(guest_name);
 CREATE INDEX idx_reservations_guest_phone ON reservations(guest_phone);
+CREATE INDEX idx_reservations_employee_id ON reservations(employee_id);
 CREATE INDEX idx_tables_room ON tables(room_id);
 
 -- Additional indexes for employees

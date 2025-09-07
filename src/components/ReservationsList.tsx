@@ -158,7 +158,7 @@ export function ReservationsList({
           reservation_date_to: to,
           status: filters.status as "active" | "completed" | "cancelled" | "all",
           room_id: filters.room_id || undefined,
-          created_by: filters.employee || undefined,
+          employee_id: filters.employee || undefined,
         } as any);
       }
 
@@ -216,7 +216,7 @@ export function ReservationsList({
 
     // Employee filter
     if (filters.employee) {
-      filtered = filtered.filter((r) => r.created_by === filters.employee);
+      filtered = filtered.filter((r) => r.employee_id === filters.employee);
     }
 
     // Search filter
@@ -538,7 +538,7 @@ export function ReservationsList({
               options={[
                 { value: "", label: "Wszyscy pracownicy" },
                 ...employees.map((employee) => ({ 
-                  value: employee.display_name, 
+                  value: employee.id, 
                   label: employee.display_name 
                 })),
               ]}
@@ -681,7 +681,9 @@ export function ReservationsList({
                       <td className="py-3 px-2 font-medium">
                         {formatTimeForDisplay(reservation.reservation_time)}
                       </td>
-                      <td className="py-3 px-2">{reservation.created_by || "-"}</td>
+                      <td className="py-3 px-2">{reservation.employee_id ? 
+                        employees.find(emp => emp.id === reservation.employee_id)?.display_name || reservation.employee_id 
+                        : "-"}</td>
                       <td className="py-3 px-2">
                         {reservation.guest_name}
                       </td>
