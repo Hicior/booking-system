@@ -25,11 +25,17 @@ alwaysApply: true
 ## .env file content
 
 ```
+# Local Database Configuration
 DB_HOST=localhost
 DB_PORT=5432
 DB_NAME=pub-booking-system
 DB_USER=postgres
 DB_PASSWORD=your_password
+
+# Pino logs
+LOG_LEVEL=debug
+
+# Auth0 Configuration (will be added later)
 ```
 
 ## Tailwind CSS Theme
