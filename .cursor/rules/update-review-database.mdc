@@ -16,13 +16,19 @@ if (dotenvResult.error) {
   console.warn('⚠️ Warning: Could not load .env file:', dotenvResult.error.message);
 }
 
-// Database configuration
+// Database configuration - staging database on Render
+const connectionString = process.env.STAGING_EXTERNAL_DB_URL;
+
+if (!connectionString) {
+  console.error('❌ STAGING_EXTERNAL_DB_URL not found in environment variables');
+  console.log('Please set STAGING_EXTERNAL_DB_URL in your .env file');
+  process.exit(1);
+}
+
 const dbConfig = {
-  host: process.env.DB_HOST,
-  port: parseInt(process.env.DB_PORT),
-  database: process.env.DB_NAME,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
+  connectionString,
+  ssl: { rejectUnauthorized: false },
+  options: '-c timezone=Europe/Warsaw',
 };
 
 const pool = new Pool(dbConfig);
@@ -121,4 +127,4 @@ await client.query(`ALTER TABLE table_name ADD COLUMN IF NOT EXISTS new_column V
 ```
 
 ## Environment Variables Used
-- `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` (from `.env` file) 
+- `STAGING_EXTERNAL_DB_URL` (required - Render staging database connection string) 

@@ -25,12 +25,20 @@ alwaysApply: true
 ## .env file content
 
 ```
-# Local Database Configuration
+# LOCAL Database Configuration
 DB_HOST=localhost
 DB_PORT=5432
 DB_NAME=pub-booking-system
 DB_USER=postgres
 DB_PASSWORD=your_password
+
+# Staging Database Configuration (DB hosted on Render)
+STAGING_DB_PORT=5432
+STAGING_DB_NAME=booking_system_staging
+STAGING_DB_USERNAME=admin
+STAGING_DB_PASSWORD=your_password
+STAGING_EXTERNAL_DB_URL=your_external_db_url
+STAGING_DB_PSQL_COMMAND=your_psql_command
 
 # Pino logs
 LOG_LEVEL=debug

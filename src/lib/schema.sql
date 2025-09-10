@@ -1,5 +1,4 @@
 -- Database schema for Restaurant Booking System
--- Created based on requirements in README.md
 
 -- Enable UUID extension
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
@@ -290,3 +289,25 @@ CREATE TRIGGER update_reservations_updated_at BEFORE UPDATE ON reservations
 CREATE TRIGGER prevent_reservation_overlap 
     BEFORE INSERT OR UPDATE ON reservations
     FOR EACH ROW EXECUTE FUNCTION check_reservation_overlap();
+
+-- Convenience view for display-friendly activity logs
+-- Combines base activity logs with current reservation/table/room context
+CREATE OR REPLACE VIEW activity_logs_with_display AS
+SELECT 
+    ral.id,
+    ral.reservation_id,
+    ral.action_type,
+    ral.performed_at,
+    ral.field_changes,
+    ral.reservation_snapshot,
+    ral.notes,
+    ral.ip_address,
+    ral.user_agent,
+    r.guest_name AS current_guest_name,
+    r.status AS current_status,
+    t.table_number,
+    rm.name AS room_name
+FROM reservation_activity_logs ral
+LEFT JOIN reservations r ON ral.reservation_id = r.id
+LEFT JOIN tables t ON r.table_id = t.id
+LEFT JOIN rooms rm ON t.room_id = rm.id;
