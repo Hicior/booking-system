@@ -13,7 +13,7 @@ if (!stagingConnectionString) {
 
 const dbConfig: any = {
   connectionString: stagingConnectionString,
-  ssl: { rejectUnauthorized: false },
+  ssl: true,
   max: 10,
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 2000,

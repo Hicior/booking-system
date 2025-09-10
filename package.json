@@ -15,7 +15,9 @@
     "debug-db": "node src/scripts/debug-database.js",
     "generate-src-md": "node src/scripts/generate-src-md.js",
     "apply-schema": "node src/scripts/apply-schema.js",
-    "seed-db": "node src/scripts/apply-seed.js"
+    "seed-db": "node src/scripts/apply-seed.js",
+    "create-app-user": "node src/scripts/create-app-user.js",
+    "test-crud": "node src/scripts/test-crud-operations.js"
   },
   "dependencies": {
     "@types/pg": "^8.10.6",
