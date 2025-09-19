@@ -47,7 +47,7 @@ src/scripts/
 
 # Markdown files
 *.md
-!Production_plan.md
+!PRODUCTION_PLAN.md
 !BUSINESS_LOGIC.md
 
 # Debug output

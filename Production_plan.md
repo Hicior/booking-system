@@ -1,57 +1,131 @@
-# SECURITY.md — booking-system
+# Restaurant Booking System - Production Plan
 
-**Project**: Restaurant Booking System  
-**Stack**: Next.js 15 (App Router), React 19, Node 22.19.0, PostgreSQL, `pg`, `pino`  
-**Status**: Development (Staging DB). Auth0 & Render planned.  
-**Last updated**: 2025‑09‑19
+**Project**: Restaurant Booking System
+**Stack**: Next.js 15 (App Router), React 19, Node 22.19.0, PostgreSQL, `pg`, `pino`
+**Status**: Development (Staging DB). Auth0 & Render planned.
+**Last updated**: 2025‑09‑19 (Enhanced for single-user simplicity)
 
-> This document covers expected production behavior.
 ---
 
-## Production plan & assumptions
+## Executive Summary
 
-### Assumptions
+### Project Overview
+Restaurant booking system for "Pub Mentzen" with visual floor plan interface, cross-day reservation logic, and comprehensive activity logging. Single authenticated user model with full operational access.
 
-- Hosting: Render (Web Service + Managed Postgres).
-- Auth: Auth0 (1 user only).
-- Access model: the Auth0 user = full access to operations within the app.
-- Stability: use the production-stable dependency set (Next 15.3.5, React 19.0.0, Node 22.19.0).
+### Key Technology Decisions
+- **Hosting**: Render (Web Service + Managed Postgres)
+- **Authentication**: Auth0 (single user, cookie-based sessions)
+- **Runtime**: Node 22.19.0 (pinned), Next.js 15.3.5, React 19.0.0
+- **Database**: PostgreSQL with SSL, least-privileged `app_user` role
+- **Logging**: Pino minimal setup, structured JSON to stdout only
 
-### Runtime & versions
+### Access Model
+- Auth0 user = full access to all app operations
+- Destructive/admin operations via separate scripts with privileged DB credentials
+- No role-based access control within the app
 
-- Node: 22.19.0 (pin in engines + Render runtime).
-- Next: 15.3.5 (pinned).
-- React/DOM: 19.0.0 (pinned).
-- **CRITICAL**: Commit package-lock.json to ensure exact dependency versions across environments.
-- Run `npm ci` (not `npm install`) in production to use lockfile exactly.
-- Set up automated security audits with `npm audit` in CI/CD pipeline.
+---
 
-### Authentication
+## 1. Deployment & Infrastructure
 
-- Add middleware.ts using Auth0 withMiddlewareAuthRequired to protect all app routes except static assets.
-- No roles required in Auth0 (all users have access to all routes in the app).
-- Session cookies: secure, HttpOnly, SameSite=Lax (default from SDK).
+### Runtime & Dependency Management
+- **Node**: 22.19.0 (pin in engines + Render runtime)
+- **Next**: 15.3.5 (pinned for stability)
+- **React/DOM**: 19.0.0 (pinned)
+- **CRITICAL**: Commit package-lock.json to ensure exact dependency versions
+- Use `npm ci` (not `npm install`) in production
+- Set up automated security audits with `npm audit` in CI/CD pipeline
 
-### CSRL & CORS
+### Database Configuration
+- **Provider**: Render Postgres with SSL required (`PGSSLMODE=require`)
+- **Connection**: Use Internal Database URL from Render
+- **SSL Config**: `ssl: { rejectUnauthorized: false }` in `pg` config
+- **App Role**: Connect as least-privileged `app_user` (no superuser access)
+- **Admin Role**: Reserve superuser for migrations and maintenance scripts only
+- **Backups**: Automatic daily backups on Render
 
-- API is same-origin only. No CORS.
-- If you use cookie sessions for API calls, add a CSRF header check for POST/PUT/DELETE.
+### Environment Variables
+```bash
+NODE_ENV=production
+NEXT_PUBLIC_APP_URL=https://your-app.render.com
 
-### Security headers
+# Database
+APP_USER_PRODUCTION_DATABASE_URL=postgres://app_user:pass@host:5432/db?sslmode=require
+ADMIN_PRODUCTION_DATABASE_URL=postgres://admin:pass@host:5432/db?sslmode=require
 
-In next.config.ts → headers():
-- X-Frame-Options: DENY
-- X-Content-Type-Options: nosniff
-- Referrer-Policy: no-referrer
-- Permissions-Policy: camera=(), microphone=(), geolocation=()
-- Strict-Transport-Security: max-age=63072000; includeSubDomains; preload
+# Auth0
+AUTH0_DOMAIN=your-tenant.auth0.com
+AUTH0_CLIENT_ID=your_client_id
+AUTH0_CLIENT_SECRET=your_client_secret
+AUTH0_ISSUER_BASE_URL=https://your-tenant.auth0.com
+AUTH0_BASE_URL=https://your-app.render.com
+AUTH0_SECRET=your_32_byte_secret
 
-Add a minimal CSP (allow self + Auth0 on connect-src).
+# Logging
+PINO_LOG_LEVEL=info
+DISABLE_FILE_LOGS=true
+```
 
-Example CSP snippet for `next.config.ts`:
+---
+
+## 2. Security Framework
+
+### Authentication (Auth0)
+**Simple Cookie-Based Authentication**:
+- Single authentication method using Auth0 SDK cookies
+- All routes (pages and API) protected by the same session mechanism
+- No token complexity needed for single-user system
+
+#### Implementation
+1. **Middleware Protection** (`src/middleware.ts`):
+   - Use `withMiddlewareAuthRequired` to protect all app routes except static assets
+   - Cookie-based session validation for both page and API access
+
+2. **Session Security**:
+   - Rotate `AUTH0_SECRET` on schedule
+   - Secure cookie settings: `secure: true`, `SameSite=Lax`, `HttpOnly: true`
+   - Session expires after inactivity (Auth0 default: 24 hours)
+
+3. **API Access**:
+   - Same session cookies used for API endpoints
+   - No separate token validation needed
+   - Simpler implementation and maintenance
+
+### Authorization & Route Access
+
+| Route | Methods | Access | Notes |
+|-------|---------|--------|-------|
+| **Health & System** |
+| `/api/health` | GET | Public | Database status, system metrics (no sensitive data) |
+| **Employees** |
+| `/api/employees` | GET, POST | Authenticated | Configuration UI access |
+| `/api/employees/[id]` | GET, PUT, DELETE | Authenticated | Profile management, restrict DELETE to deactivate |
+| **Rooms & Tables** |
+| `/api/rooms` | GET | Authenticated | Read room list |
+| `/api/rooms/[roomId]/tables` | GET | Authenticated | Floor plan data |
+| `/api/tables` | GET | Authenticated | All active tables |
+| `/api/tables/[tableId]` | PUT | Authenticated | Position updates, validate payload |
+| **Reservations** |
+| `/api/reservations` | GET | Authenticated | Paginated: limit≤200, default offset=0 |
+| `/api/reservations` | POST | Authenticated | Create reservation, return TABLE_UNAVAILABLE on conflicts |
+| `/api/reservations/[id]` | GET, PUT, DELETE | Authenticated | CRUD operations with activity logging |
+| `/api/reservations/auto-complete` | POST | Authenticated | Maintenance operation |
+| **Availability & Logs** |
+| `/api/availability` | GET | Authenticated | Table availability check |
+| `/api/activity-logs` | GET | Authenticated | Activity page access |
+| `/api/activity-logs/[reservationId]` | GET | Authenticated | Reservation history |
+| `/api/activity-logs/cleanup` | POST | Authenticated | Maintenance endpoint, enforce bounds 1..12 |
+
+### Security Headers
+Configure in `next.config.ts`:
 
 ```ts
 const securityHeaders = [
+  { key: 'X-Frame-Options', value: 'DENY' },
+  { key: 'X-Content-Type-Options', value: 'nosniff' },
+  { key: 'Referrer-Policy', value: 'no-referrer' },
+  { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=()' },
+  { key: 'Strict-Transport-Security', value: 'max-age=63072000; includeSubDomains; preload' },
   {
     key: 'Content-Security-Policy',
     value: [
@@ -59,12 +133,11 @@ const securityHeaders = [
       "script-src 'self'",
       "style-src 'self' 'unsafe-inline'",
       "img-src 'self' data:",
-      "connect-src 'self' https://YOUR_AUTH0_DOMAIN",
+      "connect-src 'self' https://*.auth0.com",
       "font-src 'self'",
       "frame-ancestors 'none'",
     ].join('; '),
   },
-  // other headers ...
 ];
 
 export async function headers() {
@@ -72,127 +145,20 @@ export async function headers() {
 }
 ```
 
-Make sure to verify actual CSP app needs.
+### CORS Policy
+- **Same-origin only**: No `Access-Control-Allow-Origin: *`
+- Cookie-based auth with `SameSite=Lax` provides CSRF protection
+- Same-origin policy prevents session leakage
 
-### Database
-
-Use Render Postgres with SSL required.
-App connects as least-privileged user (no superuser). In production, connect to Database as app_user.
-In production, use Internal Database URL from Render to connect to the database.
-
-### Input validation
-
-- Use Zod on all request bodies/queries in route handlers.
-- Map known errors to friendly codes (e.g., TABLE_UNAVAILABLE → HTTP 409).
-- Centralize validation schemas and error helpers (e.g., `src/lib/validation`) so request/response types stay consistent across handlers.
-
-### Logging
-
-- Stick with Pino emitting structured JSON to stdout (Render captures it automatically).
-- Keep `pino-pretty` as a local-only dev convenience; no extra transports or file writes in prod.
-- Redact obvious PII (`guest_phone`, notes, reservation snapshots) to avoid leaking sensitive data even in short-lived logs.
-- Default production level stays at `info`; bump temporarily when debugging.
-
-### Rate limiting (lightweight)
-
-Add an in-memory limiter in middleware:
-- Reads: 100 req/min/IP
-- Writes: 50 req/min/IP
-- Admin endpoints: 5 req/min/IP
-
+**Note**: Rate limiting omitted for single-user system - Render provides DDoS protection at infrastructure level.
 
 ---
 
-## 1) Scope
-In scope: all backend surfaces that handle data/auth logic—Next.js route handlers under `src/app/api/**`, shared services and database access in `src/lib/**`, middleware, global logging/error plumbing, and deployment/config assets (Next config, env management, scripts).
+## 3. Application Security
 
-Out of scope: purely presentational client components and styling under `src/app/**` (pages/layouts) and `src/components/**` as long as they don’t introduce new network calls or data processing.
+### Input Validation (Zod)
+Centralize validation schemas in `src/lib/validation/`:
 
----
-
-## 2) Architecture
-- **Next.js App Router** with route handlers in `app/api/**`.
-- **DB access** via `src/lib/database.ts` (pg Pool), helpers in `src/lib/services.ts`.
-- **Schema** in `src/lib/schema.sql` (rooms, tables, reservations, employees, reservation_activity_logs + triggers/funcs).
-- **Logging** via `pino` with helper wrappers `logger.ts`.
-- **Staff UI & API share the router**: `src/app/{reservations,overview,activity,configuration}/page.tsx` render the operator interface that calls into those APIs.
-- **Business logic centralized** in `src/lib/services.ts`, wrapping transactions, conflict handling, and activity logging.
-- **Tooling layer**: `src/scripts/*` provide schema/seeding/maintenance commands and `src/lib/api-client.ts` is the client-side fetch wrapper used throughout the UI.
-
----
-
-## 3) Threat model & roles
-**Actors**
-- Staff (authenticated via Auth0, full app access while backend connects with least-privileged DB role `app_user`)
-- Admin/maintenance operator (not an Auth0 user; runs Render cron jobs or local scripts that connect with a privileged DB credential or service account for cleanup/migrations)
-- Attacker (unauthenticated internet user attempting to bypass Auth0 or abuse exposed endpoints)
-
-**Assets**
-- Reservations data (PII: guest name/phone, notes)
-- Employees and layout data
-- Activity logs (contain snapshots with PII)
-
-**Key risks**
-- Unauthorized read/write on `/api/**`
-- CSRF on state‑changing endpoints if cookie auth is used
-- PII in logs
-- DoS via unbounded reads
-- Weak DB role or no SSL to DB in prod
-- Missing input validation leaves some SQL queries injectable (e.g., `status_filter` in `getReservationsWithCrossDay`).
-- Admin-only maintenance endpoints (`/api/activity-logs/cleanup`, `/api/reservations/auto-complete`, etc.) are public until Auth0 middleware and rate limiting ship.
-
----
-
-## 4) Authentication (Auth0)
-Use `@auth0/nextjs-auth0` (edge). Protect all `/api/**` and app pages by default; selectively allow public routes (currently none).
-
-### 4.1 Middleware guard
-Create `src/middleware.ts`.
-
-### 4.2 Auth helpers (no RBAC)
-Create `src/lib/auth.ts` with thin wrappers around Auth0 SDK helpers (`getSession`, `getAccessToken`). Use inside route handlers to:
-- Verify a session exists before mutating data (throw 401 otherwise).
-- Surface user identifiers (sub/email) for audit logging and reservation activity attribution.
-
-Auth0 roles are not used—any signed-in user has the same in-app permissions. Destructive/admin operations run outside the app (Render cron jobs or local scripts) using separate privileged credentials, so the app only needs to differentiate "authenticated" vs "public" requests.
-
-### 4.3 Session security
-- Use cookie session (Auth0 SDK default). Set `cookie.secure: true`, `SameSite=Lax` (or `Strict` if feasible).
-- Rotate `AUTH0_SECRET` on schedule.
-
----
-
-## 5) Authorization & route access policy
-> Default: **deny** unless authenticated via Auth0. All signed-in users share the same UI permissions; destructive maintenance tasks still run via local scripts with privileged DB credentials.
-
-| Route | Methods | Access | Notes |
-|---|---|---|---|
-| `/api/employees` | GET | Authenticated UI (configuration) | Supports `include_inactive`. Ensure only trusted staff reach configuration UI.
-|  | POST | Authenticated UI (configuration) | Creates employees; add audit logging.
-| `/api/employees/[id]` | GET | Authenticated UI (configuration) | 404 when missing.
-|  | PUT | Authenticated UI (configuration) | Update employee profile/active flag.
-|  | DELETE | Authenticated UI (configuration) | Currently allows hard delete; plan to restrict to deactivate-only or move to maintenance script if needed.
-| `/api/rooms` | GET | Authenticated UI | Read list of rooms.
-| `/api/rooms/[roomId]/tables` | GET | Authenticated UI | Read tables per room for floor plan.
-| `/api/tables` | GET | Authenticated UI | Load all active tables.
-| `/api/tables/[tableId]` | PUT | Authenticated UI | Update table properties/position; validate payload.
-| `/api/reservations` | GET | Authenticated UI | **Add pagination**: enforce `limit<=200`, default `offset=0`.
-|  | POST | Authenticated UI | Creates reservation; return `TABLE_UNAVAILABLE` on conflicts.
-| `/api/reservations/[id]` | GET | Authenticated UI | Fetch reservation details with table/room.
-|  | PUT | Authenticated UI | Update reservation fields/status; triggers activity logging.
-|  | DELETE | Authenticated UI | Marks reservation cancelled + activity log entry.
-| `/api/reservations/auto-complete` | POST | Internal job (cron/script) | Dangerous bulk updater. Remove from UI and protect via maintenance credential.
-| `/api/availability` | GET | Authenticated UI | Table availability check; validate `tableId/date/time`.
-| `/api/activity-logs` | GET | Authenticated UI (activity page) | Returns listings/summary/search; redact PII as needed.
-| `/api/activity-logs/[reservationId]` | GET | Authenticated UI (activity page) | Single reservation history view.
-| `/api/activity-logs/cleanup` | POST | Internal job (cron/script) | Cleanup endpoint; keep out of UI and enforce server-side bounds `1..12`.
-
-**Auto-completion note**: keep the `/api/reservations/auto-complete` endpoint in the app for UI-triggered housekeeping, but add debounce/locking (e.g., allow once per N minutes via shared state or cache) so multiple open tabs don’t trigger it in parallel.
-
----
-
-## 6) Request validation & error handling
-Adopt **Zod** for input validation on every route receiving body/query. Create shared schemas under `src/lib/validation/` and reuse them in handlers/services.
 ```ts
 import { z } from 'zod';
 
@@ -207,204 +173,190 @@ export const CreateReservationSchema = z.object({
   notes: z.string().max(1000).optional(),
   created_by: z.string().max(100).optional(),
 });
-
-// in route handler
-const payload = await request.json();
-const parsed = CreateReservationSchema.safeParse(payload);
-if (!parsed.success) {
-  return NextResponse.json(
-    {
-      error: {
-        code: 'VALIDATION_ERROR',
-        message: 'Invalid reservation payload',
-        details: parsed.error.flatten(),
-      },
-    },
-    { status: 400 }
-  );
-}
-
-const body = parsed.data;
 ```
 
-**Error responses & information disclosure prevention**: never pass raw DB errors to clients. Standardize:
+### Error Handling
+**Standardized error responses**:
 ```json
-{ "error": { "code": "VALIDATION_ERROR", "message": "…" } }
-```
-Provide a central helper (e.g., `src/lib/http-error.ts`) to map known service errors (e.g., `TABLE_UNAVAILABLE`) to HTTP 409 and sanitize logged context.
-
-**Additional error handling safeguards** — **TODO(Prod)**:
-- **Disable stack traces** in production: ensure `NODE_ENV=production` and strip stack traces from JSON responses (log server-side only).
-- **Generic error messages**: Never expose internal system paths, database schema details, or implementation specifics.
-- **Error monitoring**: Set up error tracking (e.g., Sentry) with sanitized error details for debugging.
-- **HTTP 500 fallback**: Implement global error handler returning a generic "Internal Server Error" while logging structured context.
-- **Request timeout**: Set reasonable timeouts on outbound calls (DB/fetch) to prevent resource exhaustion attacks.
-
----
-
-## 7) CSRF
-We are keeping Auth0's cookie session flow. Add a double-submit CSRF token so every `POST/PUT/DELETE` includes a verifiable header.
-
-- On session creation (e.g., via `/api/auth/login` callback) mint a random token, store a signed hash server-side (cookie `csrf_token_sig` – HttpOnly) and expose the raw token in a separate, same-site cookie (`csrf_token`).
-- Provide a helper (`src/lib/csrf.ts`) that reads the cookies, verifies the signature, and compares the header `x-csrf-token` with the cookie value in middleware/route handlers.
-- In the client, read `csrf_token` once on load (via `document.cookie` or a tiny `/api/csrf` endpoint) and attach it to every mutating request header.
-- Reject missing/invalid tokens with HTTP 403 before service logic runs; log attempts for auditing.
-
-**TODO(Prod)**: implement CSRF middleware wrapping `POST/PUT/DELETE` routes and update the API client to automatically send `x-csrf-token`.
-
----
-
-## 8) CORS
-- API is same‑origin only. **Do not** enable `Access-Control-Allow-Origin: *`.
-- If needed, allow explicit origins only (env‑driven allowlist).
-
----
-
-## 9) HTTP security headers — **TODO(Prod)**
-Add global headers in `next.config.ts`:
-```ts
-export default {
-  async headers() {
-    return [{
-      source: '/:path*',
-      headers: [
-        { key: 'X-Frame-Options', value: 'DENY' },
-        { key: 'X-Content-Type-Options', value: 'nosniff' },
-        { key: 'Referrer-Policy', value: 'no-referrer' },
-        { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=()' },
-        { key: 'Strict-Transport-Security', value: 'max-age=63072000; includeSubDomains; preload' },
-      ],
-    }];
-  },
-} satisfies import('next').NextConfig;
+{ "error": { "code": "VALIDATION_ERROR", "message": "Invalid reservation payload" } }
 ```
 
-### Content Security Policy (CSP)
-Add CSP with Auth0 origins (adjust tenant):
-```ts
-const csp = [
-  "default-src 'self'",
-  "script-src 'self' 'unsafe-inline'", // consider nonces/hashes later
-  "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data:",
-  "connect-src 'self' https://YOUR_AUTH0_DOMAIN",
-  "frame-ancestors 'none'",
-].join('; ');
-```
-Apply via `headers()` or per‑page headers.
+**Security safeguards**:
+- Disable stack traces in production (`NODE_ENV=production`)
+- Never expose database schema details or internal paths
+- Generic HTTP 500 fallback with server-side logging only
+- Set timeouts on database/external calls
+- Map known service errors to appropriate HTTP status codes
 
----
-
-## 10) Rate limiting — **TODO(Prod)**
-Add per‑IP limits, stricter on admin/destructive endpoints:
-- Read endpoints: 100 req/min/IP
-- Write endpoints: 50 req/min/IP
-- `/api/activity-logs/cleanup`, `/api/reservations/auto-complete`: 5 req/min/IP + require admin
-
-Implement with an in‑memory token bucket in production.
-
----
-
-## 11) Logging & privacy
-Current logging includes PII (guest_name/phone) in service logs.
-
-**Policies**
-- Treat **guest phone, notes, reservation_snapshot** as **sensitive**.
-- **Redact** sensitive fields in `pino`:
+### Logging & Privacy
+**Simplified Pino setup**:
 ```ts
 export const logger = pino({
-  // ...existing config,
+  level: process.env.PINO_LOG_LEVEL || 'info',
+  // Optional: Basic PII redaction for phone numbers
   redact: {
-    paths: [
-      'guest_phone',
-      'reservation_snapshot.guest_phone',
-      'field_changes.*.old',
-      'field_changes.*.new',
-      'request_body',
-    ],
+    paths: ['guest_phone', 'reservation_snapshot.guest_phone'],
     censor: '[REDACTED]'
   }
-}, createDestination());
-```
-- Avoid logging full SQL or unbounded objects.
-- **Render note**: file destinations are ephemeral. Prefer stdout only in prod. Add env flag to disable file logging.
-
-**Retention**
-- Activity logs cleanup via endpoint, done by the admin manually.
-
----
-
-## 12) Database security
-**Connections**
-- On Render: require SSL. Use `PGSSLMODE=require` or `ssl: { rejectUnauthorized: false }` in `pg` config.
-- Prefer a single `DATABASE_URL` env. Example `postgres://user:pass@host:5432/db?sslmode=require`.
-
-**Roles & least privilege**
-Create a dedicated app role with minimum privileges.
-Connect using `app_user`; reserve superuser for migrations, maintenance and operiations like clearing logs only.
-
-**Schema hardening**
-- Ensure **NOT NULL** where applicable (e.g., `tables.position_x/position_y` if required by UI).
-- Keep overlap trigger as the **single source of truth** for conflicts.
-
-**Backups**
-- Automatic daily backups on Render.
-
----
-
-## 13) Activity logs
-- Contain full reservation snapshots (PII).
-- Consider hashing/anonymizing sensitive data in snapshots, like phone numbers and names.
-
----
-
-## 14) Pagination & query safety
-Add `limit` (max 200) & `offset` to:
-- `/api/reservations`
-
----
-
-## 15) Secrets & environment
-**Never** commit real secrets. Maintain `.env.example` only. Suggested keys:
-```
-NODE_ENV=
-NEXT_PUBLIC_APP_URL=
-
-# Database
-APP_USER_STAGING_DATABASE_URL=
-ADMIN_STAGING_DATABASE_URL=
-APP_USER_PRODUCTION_DATABASE_URL=
-ADMIN_PRODUCTION_DATABASE_URL=
-
-# Auth0
-AUTH0_DOMAIN=
-AUTH0_CLIENT_ID=
-AUTH0_CLIENT_SECRET=
-AUTH0_ISSUER_BASE_URL=
-AUTH0_BASE_URL=
-AUTH0_SECRET=
-
-# Logging
-PINO_LOG_LEVEL=info
-DISABLE_FILE_LOGS=true
+});
 ```
 
-Rotate secrets; store in Render dashboard; use separate vars per env.
+**Logging practices**:
+- Structured JSON to stdout only (Render captures automatically)
+- Keep `pino-pretty` as dev-only convenience
+- Production level: `info` (minimal logging for debugging when needed)
+- Avoid logging sensitive data and large objects
+
+### Activity Logs
+**Content**: Full reservation snapshots (contains PII)
+**Retention**: Manual cleanup via `/api/activity-logs/cleanup` endpoint
+**Privacy**: Consider hashing/anonymizing sensitive data in snapshots
 
 ---
 
-## 16) Operational safeguards
-- **Migrations**: run with a privileged user; app uses `app_user`.
-- **Health checks**: expose minimal `/api/health` returning DB pool stats from `healthCheck()` without secrets.
-- **Incidents**: on breach, rotate Auth0 secrets, DB password, revoke sessions, restore from backup, review logs.
+## 4. API Documentation
+
+### Request/Response Standards
+- All route handlers use Zod validation on request bodies/queries
+- UUID primary keys throughout (no exposed incremental IDs)
+- Parameterized SQL only (no string concatenation)
+- Server-side date normalization (`normalizeDateForDb`)
+
+### Pagination Requirements
+- `/api/reservations`: Enforce `limit <= 200`, default `offset = 0`
+- Future: Consider adding pagination to activity logs
+
+### Error Codes
+| Code | HTTP Status | Description |
+|------|-------------|-------------|
+| `VALIDATION_ERROR` | 400 | Invalid request payload |
+| `TABLE_UNAVAILABLE` | 409 | Reservation conflict |
+| `NOT_FOUND` | 404 | Resource doesn't exist |
+| `UNAUTHORIZED` | 401 | Invalid/missing Auth0 session |
+| `INTERNAL_ERROR` | 500 | Generic server error |
+
+### Health Check Endpoint
+Implement `/api/health` for Render monitoring:
+
+```ts
+// src/app/api/health/route.ts
+import { NextResponse } from 'next/server';
+import { healthCheck } from '@/lib/database';
+
+export async function GET() {
+  const health = await healthCheck();
+  const status = health.status === 'healthy' ? 200 : 503;
+
+  return NextResponse.json({
+    status: health.status,
+    timestamp: new Date().toISOString(),
+    database: {
+      connected: health.status === 'healthy',
+      pool_total: health.details.total_connections,
+      pool_idle: health.details.idle_connections
+    }
+  }, { status });
+}
+```
 
 ---
 
-## 17) Secure coding standards
-- Validate inputs with Zod; no `any` types for bodies.
-- Parameterized SQL only (already in use).
-- Normalize dates server‑side (`normalizeDateForDb`).
-- Don’t leak `error.message` from DB; map to standardized codes.
-- Prefer `uuid` for external identifiers; never expose internal incremental IDs.
+## 5. Operational Procedures
+
+### Deployment Workflow
+1. **Pre-deployment**:
+   - Run `npm audit` and address critical vulnerabilities
+   - Verify package-lock.json is committed
+   - Test with staging database
+
+2. **Database Setup**:
+   - Create `app_user` with minimal privileges (SELECT, INSERT, UPDATE, DELETE on app tables)
+   - Run schema migrations with admin credentials
+   - Verify SSL connection requirements
+
+3. **Application Deployment**:
+   - Use `npm ci` for exact dependency installation
+   - Set environment variables in Render dashboard
+   - Configure health check endpoint `/api/health`
+
+### Maintenance Tasks
+**Regular operations**:
+- Monitor Render application logs for errors
+- Clean activity logs via `/api/activity-logs/cleanup`
+- Verify daily database backups
+
+**Administrative scripts** (run locally with admin credentials):
+- Schema migrations (`npm run apply-schema`)
+- Database seeding (`npm run seed-db`)
+- Maintenance commands (`npm run clean-logs`)
+
+### Health Monitoring
+- **Render automatic monitoring**: Built-in health checks and restart policies
+- **Custom health endpoint**: `/api/health` for database status verification
+- **Simple logging**: Monitor stdout logs through Render dashboard
 
 ---
+
+## 6. Production Implementation Checklist
+
+### Auth0 Setup
+- [ ] Create Auth0 tenant and configure application (SPA type)
+- [ ] Set callback URLs for Render domain
+- [ ] Configure session timeout and security settings
+- [ ] Generate and secure `AUTH0_SECRET` (32+ characters)
+
+### Application Security
+- [ ] Implement `src/middleware.ts` with `withMiddlewareAuthRequired`
+- [ ] Add security headers to `next.config.ts` (HSTS, CSP, X-Frame-Options)
+- [ ] Create `src/lib/validation/` with Zod schemas for all API endpoints
+- [ ] Implement standardized error responses with proper HTTP status codes
+- [ ] Add `/api/health` endpoint for monitoring
+
+### Database Security
+- [ ] Create `app_user` role with minimal privileges (SELECT, INSERT, UPDATE, DELETE)
+- [ ] Configure SSL-required connections in production
+- [ ] Set up separate admin credentials for migrations
+- [ ] Test backup and restore procedures
+
+### Render Deployment
+- [ ] Configure environment variables in Render dashboard
+- [ ] Set Node.js version to 22.19.0
+- [ ] Configure health check to use `/api/health`
+- [ ] Deploy with automatic deploys from main branch
+- [ ] Verify Auth0 integration works end-to-end
+
+### Post-Deployment Verification
+- [ ] Test complete authentication flow
+- [ ] Verify all API endpoints require authentication
+- [ ] Test reservation creation and conflict handling
+- [ ] Confirm health monitoring is working
+- [ ] Run security audit with `npm audit`
+
+---
+
+## 7. Secure Coding Standards
+
+**Authentication**:
+- Validate Auth0 session on every request (pages and API)
+- Never bypass session validation for "convenience"
+- Use middleware for consistent route protection
+
+**Data handling**:
+- Use Zod for all input validation (no `any` types)
+- Parameterized SQL queries only (already implemented)
+- Normalize dates server-side consistently (already implemented)
+
+**Error management**:
+- Never leak `error.message` from database to clients
+- Map internal errors to standardized public codes
+- Log full context server-side for debugging
+
+**Security practices**:
+- Prefer UUID for external identifiers (already implemented)
+- Validate all user inputs at API boundaries
+- Use least-privileged database connections
+- Rotate Auth0 secrets on schedule
+
+---
+
+*This document covers expected production behavior and security requirements for the Restaurant Booking System.*
